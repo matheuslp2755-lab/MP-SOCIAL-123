@@ -6,6 +6,28 @@ import CreatePostModal from './post/CreatePostModal';
 import MessagesModal from './messages/MessagesModal';
 import { auth, db, collection, query, where, getDocs, orderBy as firebaseOrderBy, limit } from '../firebase';
 
+// FIX: Add and export Pulse and PulseGroup types for use in pulse-related components.
+export type Pulse = {
+    id: string;
+    mediaUrl: string;
+    mediaType: 'image' | 'video';
+    timestamp: { seconds: number; nanoseconds: number };
+    expiresAt: { seconds: number; nanoseconds: number };
+    userId: string;
+    username: string;
+    userAvatar: string;
+    viewers: string[];
+};
+
+export type PulseGroup = {
+    userId: string;
+    username: string;
+    userAvatar: string;
+    pulses: Pulse[];
+    hasUnviewed: boolean;
+};
+
+
 const Spinner: React.FC = () => (
     <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-sky-500"></div>
 );
@@ -20,7 +42,6 @@ type PostType = {
     likes: string[]; // array of userIds
     timestamp: { seconds: number; nanoseconds: number };
 };
-
 
 const EmptyFeed: React.FC = () => {
     return (
@@ -56,14 +77,18 @@ const Feed: React.FC = () => {
   useEffect(() => {
     if (viewingProfileId || !auth.currentUser) return;
 
-    const fetchFeedPosts = async () => {
+    const fetchFeed = async () => {
         setFeedLoading(true);
         try {
-            const followingRef = collection(db, 'users', auth.currentUser!.uid, 'following');
+            const currentUser = auth.currentUser;
+            if (!currentUser) return;
+
+            const followingRef = collection(db, 'users', currentUser.uid, 'following');
             const followingSnap = await getDocs(followingRef);
             const followingIds = followingSnap.docs.map(doc => doc.id);
-            const userIdsToQuery = [auth.currentUser!.uid, ...followingIds];
+            const userIdsToQuery = [currentUser.uid, ...followingIds];
             
+            // Fetch Posts
             if (userIdsToQuery.length > 0) {
                 // Firestore 'in' query is limited to 30 elements in its array.
                 const postsQuery = query(
@@ -80,12 +105,12 @@ const Feed: React.FC = () => {
             }
 
         } catch (error) {
-            console.error("Error fetching feed posts:", error);
+            console.error("Error fetching feed content:", error);
         } finally {
             setFeedLoading(false);
         }
     };
-    fetchFeedPosts();
+    fetchFeed();
   }, [viewingProfileId, feedKey, auth.currentUser]);
 
   const handleSelectUser = (userId: string) => {
@@ -110,7 +135,7 @@ const Feed: React.FC = () => {
   const handlePostDeleted = (postId: string) => {
     setFeedPosts(currentPosts => currentPosts.filter(p => p.id !== postId));
   };
-
+  
 
   return (
     <>
@@ -127,12 +152,16 @@ const Feed: React.FC = () => {
           <div className="container mx-auto max-w-lg py-8">
             {feedLoading ? (
               <div className="flex justify-center"><Spinner/></div>
-            ) : feedPosts.length > 0 ? (
-              <div className="flex flex-col gap-8">
-                {feedPosts.map(post => <Post key={post.id} post={post} onPostDeleted={handlePostDeleted} />)}
-              </div>
             ) : (
-              <EmptyFeed />
+                <>
+                    {feedPosts.length > 0 ? (
+                      <div className="flex flex-col gap-8">
+                        {feedPosts.map(post => <Post key={post.id} post={post} onPostDeleted={handlePostDeleted} />)}
+                      </div>
+                    ) : (
+                      <EmptyFeed />
+                    )}
+                </>
             )}
           </div>
         )}
