@@ -93,8 +93,5 @@
   "footer.links.lite": "Instagram Lite",
   "footer.links.threads": "Threads",
   "footer.links.contact": "Contact Uploading & Non-Users",
-  "footer.links.verified": "Meta Verified",
-  "update.title": "Update Available",
-  "update.available": "A new update is available! Reload now?",
-  "update.reload": "Reload"
+  "footer.links.verified": "Meta Verified"
 }
