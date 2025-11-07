@@ -5,6 +5,7 @@ import Login from './components/Login';
 import SignUp from './context/SignUp';
 import Feed from './components/Feed';
 import { LanguageProvider } from './context/LanguageContext';
+import UpdateNotifier from './components/common/UpdateNotifier';
 
 const AppContent: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -87,6 +88,7 @@ const App: React.FC = () => (
   <StrictMode>
     <LanguageProvider>
       <AppContent />
+      <UpdateNotifier />
     </LanguageProvider>
   </StrictMode>
 );
