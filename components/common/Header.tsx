@@ -13,13 +13,15 @@ type UserSearchResult = {
 
 type Notification = {
     id: string;
-    type: 'follow' | 'message' | 'follow_request';
+    type: 'follow' | 'message' | 'follow_request' | 'mention_comment';
     fromUserId: string;
     fromUsername: string;
     fromUserAvatar: string;
     timestamp: { seconds: number; nanoseconds: number };
     read: boolean;
     conversationId?: string;
+    postId?: string;
+    commentText?: string;
 };
 
 
@@ -386,7 +388,7 @@ const Header: React.FC<HeaderProps> = ({ onSelectUser, onGoHome, onOpenCreatePos
     const handleNotificationClick = (notification: Notification) => {
         if (notification.type === 'message' && notification.conversationId) {
             onOpenMessages(notification.conversationId);
-        } else if (notification.type === 'follow') {
+        } else if (notification.type === 'follow' || notification.type === 'mention_comment') {
             onSelectUser(notification.fromUserId);
         }
         // For follow_request, actions are handled by buttons, so no general click action
@@ -425,6 +427,21 @@ const Header: React.FC<HeaderProps> = ({ onSelectUser, onGoHome, onOpenCreatePos
            )})}
         </>
     );
+
+    const getNotificationText = (notification: Notification) => {
+        switch (notification.type) {
+            case 'follow':
+                return ' started following you.';
+            case 'message':
+                return ' sent you a message.';
+            case 'follow_request':
+                return ' wants to follow you.';
+            case 'mention_comment':
+                return ` mentioned you in a comment: "${notification.commentText}"`;
+            default:
+                return '';
+        }
+    };
 
     return (
         <header className="fixed top-0 left-0 right-0 bg-white dark:bg-black border-b border-zinc-300 dark:border-zinc-800 z-10">
@@ -492,10 +509,7 @@ const Header: React.FC<HeaderProps> = ({ onSelectUser, onGoHome, onOpenCreatePos
                                             <div className="ml-3 text-sm flex-grow">
                                                 <p>
                                                     <span className="font-semibold">{notification.fromUsername}</span>
-                                                    {notification.type === 'follow' ? ' started following you.' : 
-                                                     notification.type === 'message' ? ' sent you a message.' :
-                                                     ' wants to follow you.'
-                                                    }
+                                                    {getNotificationText(notification)}
                                                 </p>
                                                 {notification.type === 'follow_request' && (
                                                     <div className="flex gap-2 mt-2">

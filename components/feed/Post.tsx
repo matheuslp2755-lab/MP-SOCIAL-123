@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { auth, db, doc, updateDoc, arrayUnion, arrayRemove, deleteDoc, storage, ref as storageRef, deleteObject, collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, formatTimestamp } from '../../firebase';
+import { auth, db, doc, updateDoc, arrayUnion, arrayRemove, deleteDoc, storage, ref as storageRef, deleteObject, collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, formatTimestamp, where, getDocs, limit, writeBatch } from '../../firebase';
 
 type PostType = {
     id: string;
@@ -19,6 +19,12 @@ type CommentType = {
     text: string;
     timestamp: { seconds: number; nanoseconds: number };
 }
+
+type UserSearchResult = {
+    id: string;
+    username: string;
+    avatar: string;
+};
 
 const LikeIcon: React.FC<{className?: string, isLiked: boolean}> = ({ className, isLiked }) => (
   <svg aria-label="Like" className={className} fill={isLiked ? '#ef4444' : 'currentColor'} height="24" role="img" viewBox="0 0 24 24" width="24"><title>Like</title><path d="M16.792 3.904A4.989 4.989 0 0 1 21.5 9.122c0 3.072-2.652 4.959-6.12 8.351C12.89 20.72 12.434 21 12 21s-.89-.28-1.38-.627C7.152 14.08 4.5 12.192 4.5 9.122a4.989 4.989 0 0 1 4.708-5.218 4.21 4.21 0 0 1 3.675 1.941c.84 1.175.98 1.763 1.12 1.763s.278-.588 1.118-1.763a4.21 4.21 0 0 1 3.675-1.941Z"></path></svg>
@@ -57,6 +63,12 @@ const Post: React.FC<PostProps> = ({ post, onPostDeleted }) => {
   const [isCommentDeleteConfirmOpen, setIsCommentDeleteConfirmOpen] = useState(false);
   const [commentToDeleteId, setCommentToDeleteId] = useState<string | null>(null);
   const [isDeletingComment, setIsDeletingComment] = useState(false);
+
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionResults, setMentionResults] = useState<UserSearchResult[]>([]);
+  const [isMentionLoading, setIsMentionLoading] = useState(false);
+  const mentionStartPosition = useRef<number | null>(null);
+  const commentInputRef = useRef<HTMLInputElement>(null);
 
 
   useEffect(() => {
@@ -106,9 +118,6 @@ const Post: React.FC<PostProps> = ({ post, onPostDeleted }) => {
 
     setIsDeleting(true);
     try {
-        // Firebase Storage URLs are in the format:
-        // https://firebasestorage.googleapis.com/v0/b/YOUR_BUCKET/o/path%2Fto%2Fyour%2Ffile.jpg?alt=media&token=...
-        // We need to extract the path from this URL.
         const imagePath = decodeURIComponent(post.imageUrl.split('/o/')[1].split('?')[0]);
         const imageRef = storageRef(storage, imagePath);
         const postRef = doc(db, 'posts', post.id);
@@ -130,17 +139,55 @@ const Post: React.FC<PostProps> = ({ post, onPostDeleted }) => {
     e.preventDefault();
     if (!currentUser || newComment.trim() === '') return;
 
-    const commentsRef = collection(db, 'posts', post.id, 'comments');
+    const commentText = newComment.trim();
+    const mentionRegex = /@(\w+)/g;
+    const mentions = commentText.match(mentionRegex)?.map(m => m.substring(1)) || [];
+    const uniqueMentions = [...new Set(mentions)];
+
     try {
-        await addDoc(commentsRef, {
-            text: newComment.trim(),
+        const batch = writeBatch(db);
+        const commentsRef = collection(db, 'posts', post.id, 'comments');
+        const newCommentRef = doc(commentsRef);
+        
+        batch.set(newCommentRef, {
+            text: commentText,
             userId: currentUser.uid,
             username: currentUser.displayName,
             timestamp: serverTimestamp()
         });
+
+        if (uniqueMentions.length > 0) {
+            const usersRef = collection(db, 'users');
+            for (const username of uniqueMentions) {
+                const q = query(usersRef, where('username', '==', username), limit(1));
+                const userSnapshot = await getDocs(q);
+
+                if (!userSnapshot.empty) {
+                    const mentionedUserDoc = userSnapshot.docs[0];
+                    const mentionedUserId = mentionedUserDoc.id;
+
+                    if (mentionedUserId !== currentUser.uid) {
+                        const notificationRef = doc(collection(db, 'users', mentionedUserId, 'notifications'));
+                        batch.set(notificationRef, {
+                            type: 'mention_comment',
+                            fromUserId: currentUser.uid,
+                            fromUsername: currentUser.displayName,
+                            fromUserAvatar: currentUser.photoURL,
+                            postId: post.id,
+                            commentText: commentText.length > 100 ? `${commentText.substring(0, 97)}...` : commentText,
+                            timestamp: serverTimestamp(),
+                            read: false,
+                        });
+                    }
+                }
+            }
+        }
+
+        await batch.commit();
         setNewComment('');
+        setMentionQuery(null);
     } catch (error) {
-        console.error("Error adding comment: ", error);
+        console.error("Error adding comment or sending notifications: ", error);
     }
   };
   
@@ -151,7 +198,6 @@ const Post: React.FC<PostProps> = ({ post, onPostDeleted }) => {
     try {
         const commentRef = doc(db, 'posts', post.id, 'comments', commentToDeleteId);
         await deleteDoc(commentRef);
-        // onSnapshot will handle UI update
         setIsCommentDeleteConfirmOpen(false);
         setCommentToDeleteId(null);
     } catch (error) {
@@ -161,6 +207,87 @@ const Post: React.FC<PostProps> = ({ post, onPostDeleted }) => {
     }
   };
 
+    useEffect(() => {
+        if (mentionQuery === null) {
+            setMentionResults([]);
+            return;
+        }
+
+        if (mentionQuery.trim() === '') {
+            setMentionResults([]);
+            return;
+        }
+
+        const debouncedSearch = setTimeout(async () => {
+            setIsMentionLoading(true);
+            const usersRef = collection(db, 'users');
+            const q = query(
+                usersRef,
+                where('username_lowercase', '>=', mentionQuery.toLowerCase()),
+                where('username_lowercase', '<=', mentionQuery.toLowerCase() + '\uf8ff'),
+                limit(5)
+            );
+            
+            try {
+                const querySnapshot = await getDocs(q);
+                const users = querySnapshot.docs
+                    .map(doc => ({ id: doc.id, username: doc.data().username, avatar: doc.data().avatar } as UserSearchResult))
+                    .filter(user => user.id !== auth.currentUser?.uid);
+                
+                setMentionResults(users);
+            } catch (error) {
+                console.error("Error searching for mentionable users:", error);
+            } finally {
+                setIsMentionLoading(false);
+            }
+        }, 300);
+
+        return () => clearTimeout(debouncedSearch);
+    }, [mentionQuery]);
+
+  const handleCommentChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    const cursorPosition = e.target.selectionStart;
+    setNewComment(value);
+
+    if (cursorPosition === null) {
+        setMentionQuery(null);
+        return;
+    }
+    
+    const textBeforeCursor = value.substring(0, cursorPosition);
+    const atMatch = textBeforeCursor.match(/@(\w*)$/);
+
+    if (atMatch) {
+        setMentionQuery(atMatch[1]);
+        mentionStartPosition.current = textBeforeCursor.lastIndexOf('@');
+    } else {
+        setMentionQuery(null);
+    }
+  };
+
+  const handleMentionSelect = (username: string) => {
+    if (mentionStartPosition.current === null) return;
+    
+    const textBefore = newComment.substring(0, mentionStartPosition.current);
+    const queryLength = mentionQuery !== null ? mentionQuery.length : 0;
+    const textAfter = newComment.substring(mentionStartPosition.current + 1 + queryLength);
+
+    setNewComment(`${textBefore}@${username} ${textAfter}`);
+    setMentionQuery(null);
+    commentInputRef.current?.focus();
+  };
+
+  const renderTextWithMentions = (text: string) => {
+    if (!text) return text;
+    const parts = text.split(/(@\w+)/g);
+    return parts.map((part, index) => {
+        if (part.startsWith('@')) {
+            return <strong key={index} className="text-sky-500 font-semibold">{part}</strong>;
+        }
+        return part;
+    });
+  };
 
   return (
     <>
@@ -213,13 +340,13 @@ const Post: React.FC<PostProps> = ({ post, onPostDeleted }) => {
             <div className="text-sm space-y-1">
                 <p>
                     <span className="font-semibold mr-2">{post.username}</span>
-                    {post.caption}
+                    {renderTextWithMentions(post.caption)}
                 </p>
                  {comments.slice(0, 2).reverse().map(comment => (
                     <div key={comment.id} className="flex items-center justify-between group">
                          <p className="flex-grow pr-2">
                              <span className="font-semibold mr-2">{comment.username}</span>
-                             {comment.text}
+                             {renderTextWithMentions(comment.text)}
                          </p>
                          {(currentUser?.uid === comment.userId || currentUser?.uid === post.userId) && (
                               <button 
@@ -246,13 +373,31 @@ const Post: React.FC<PostProps> = ({ post, onPostDeleted }) => {
             <p className="text-xs text-zinc-500 dark:text-zinc-400 uppercase mt-2">{formatTimestamp(post.timestamp)}</p>
         </div>
 
-        <div className="border-t border-zinc-200 dark:border-zinc-800 px-4 py-2">
+        <div className="relative border-t border-zinc-200 dark:border-zinc-800 px-4 py-2">
+            {mentionQuery !== null && (
+              <div className="absolute bottom-full left-0 right-0 mb-1 bg-white dark:bg-zinc-950 rounded-md shadow-lg border border-zinc-200 dark:border-zinc-800 z-20 max-h-60 overflow-y-auto">
+                {isMentionLoading && <div className="p-2 text-center text-sm text-zinc-500">Searching...</div>}
+                {!isMentionLoading && mentionResults.length > 0 && (
+                  mentionResults.map(user => (
+                    <div key={user.id} onClick={() => handleMentionSelect(user.username)} className="flex items-center p-2 hover:bg-zinc-50 dark:hover:bg-zinc-900 cursor-pointer">
+                      <img src={user.avatar} alt={user.username} className="w-8 h-8 rounded-full object-cover mr-3" />
+                      <span className="font-semibold text-sm">{user.username}</span>
+                    </div>
+                  ))
+                )}
+                {!isMentionLoading && mentionResults.length === 0 && mentionQuery.trim() !== '' && (
+                  <div className="p-2 text-center text-sm text-zinc-500">No users found.</div>
+                )}
+              </div>
+            )}
             <form onSubmit={handleCommentSubmit} className="flex items-center">
                 <input 
+                  ref={commentInputRef}
                   type="text" 
                   placeholder="Add a comment..." 
                   value={newComment}
-                  onChange={(e) => setNewComment(e.target.value)}
+                  onChange={handleCommentChange}
+                  autoComplete="off"
                   className="w-full bg-transparent border-none focus:outline-none text-sm placeholder:text-zinc-500 dark:placeholder:text-zinc-400" />
                 <button 
                   type="submit" 

@@ -58,9 +58,9 @@ interface ConversationData {
 }
 
 
-// FIX: Corrected the `useRef` call inside the `usePrevious` hook. The generic type `T` was causing it to match an overload that requires an initial value. Changing it to `T | undefined` allows it to match the overload with no arguments.
 function usePrevious<T>(value: T): T | undefined {
-    // FIX: Changed useRef<T> to useRef<T | undefined> to fix the "Expected 1 arguments, but got 0" error.
+    // FIX: Changed useRef<T> to useRef<T | undefined> to allow initialization without an argument,
+    // which resolves the "Expected 1 arguments, but got 0" error.
     const ref = useRef<T | undefined>();
     useEffect(() => {
         ref.current = value;

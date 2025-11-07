@@ -48,10 +48,11 @@ const ConversationList: React.FC<ConversationListProps> = ({ onSelectConversatio
                 if (!Array.isArray(participants)) {
                     return null;
                 }
-                // FIX: Correctly type the participant in the find method to ensure `otherUserId` is inferred as `string | undefined`, which is then correctly narrowed by the `if` check. This resolves the type error when using it as an object key.
-                const otherUserId = participants.find(p => p !== currentUser.uid);
+                // FIX: Cast participants to string[] to ensure `otherUserId` is inferred as `string | undefined`.
+                // This resolves the type error when using it as a computed property name downstream.
+                const otherUserId = (participants as string[]).find(p => p !== currentUser.uid);
 
-                if (!otherUserId || typeof otherUserId !== 'string') {
+                if (!otherUserId) {
                     return null;
                 }
 
