@@ -21,7 +21,7 @@ import {
   onSnapshot,
   writeBatch
 } from 'firebase/firestore';
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 
 const firebaseConfig = {
     apiKey: "AIzaSyBscsAkO_yJYfVVtCBh3rNF8Cm51_HLW54",
@@ -41,6 +41,23 @@ const db = getFirestore(app);
 // Explicitly initialize Storage with the bucket URL provided by the user.
 // This is a direct fix for the upload issue, ensuring we target the correct bucket.
 const storage = getStorage(app, 'gs://teste-rede-fcb99.firebasestorage.app');
+
+const formatTimestamp = (timestamp: { seconds: number; nanoseconds: number } | null | undefined): string => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp.seconds * 1000);
+    const now = new Date();
+    const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+    if (diffInSeconds < 60) return `${diffInSeconds}s ago`;
+    const diffInMinutes = Math.floor(diffInSeconds / 60);
+    if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
+    const diffInHours = Math.floor(diffInMinutes / 60);
+    if (diffInHours < 24) return `${diffInHours}h ago`;
+    const diffInDays = Math.floor(diffInHours / 24);
+    if (diffInDays < 7) return `${diffInDays}d ago`;
+    
+    return date.toLocaleDateString();
+};
 
 export { 
   auth, 
@@ -65,5 +82,7 @@ export {
   arrayUnion,
   arrayRemove,
   onSnapshot,
-  writeBatch
+  writeBatch,
+  deleteObject,
+  formatTimestamp
 };

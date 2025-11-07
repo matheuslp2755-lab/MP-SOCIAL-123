@@ -1,21 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { signOut } from 'firebase/auth';
 import { auth, db, collection, query, where, getDocs, limit, doc, setDoc, deleteDoc, serverTimestamp, orderBy, onSnapshot, writeBatch, addDoc } from '../../firebase';
+import OnlineIndicator from './OnlineIndicator';
 
 type UserSearchResult = {
     id: string;
     username: string;
     avatar: string;
+    isPrivate: boolean;
+    lastSeen?: { seconds: number; nanoseconds: number };
 };
 
 type Notification = {
     id: string;
-    type: 'follow';
+    type: 'follow' | 'message' | 'follow_request';
     fromUserId: string;
     fromUsername: string;
     fromUserAvatar: string;
     timestamp: { seconds: number; nanoseconds: number };
     read: boolean;
+    conversationId?: string;
 };
 
 
@@ -23,7 +27,7 @@ interface HeaderProps {
     onSelectUser: (userId: string) => void;
     onGoHome: () => void;
     onOpenCreatePostModal: () => void;
-    onOpenMessages: () => void;
+    onOpenMessages: (conversationId?: string) => void;
 }
 
 const SearchIcon: React.FC<{className?: string}> = ({className = "h-4 w-4 text-zinc-400 dark:text-zinc-500"}) => (
@@ -74,6 +78,7 @@ const Header: React.FC<HeaderProps> = ({ onSelectUser, onGoHome, onOpenCreatePos
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [hasUnreadNotifications, setHasUnreadNotifications] = useState(false);
     const [following, setFollowing] = useState<string[]>([]);
+    const [requestedIds, setRequestedIds] = useState<string[]>([]);
     const [isMobileSearchVisible, setIsMobileSearchVisible] = useState(false);
     const [forceUpdate, setForceUpdate] = useState(0); // Dummy state to force re-render on profile update
     const searchRef = useRef<HTMLDivElement>(null);
@@ -109,17 +114,25 @@ const Header: React.FC<HeaderProps> = ({ onSelectUser, onGoHome, onOpenCreatePos
         return () => unsubscribe();
     }, [currentUser]);
 
-    const fetchFollowing = async () => {
+    const fetchFollowingAndRequests = async () => {
         if (auth.currentUser) {
             const followingRef = collection(db, 'users', auth.currentUser.uid, 'following');
-            const querySnapshot = await getDocs(followingRef);
-            const followingIds = querySnapshot.docs.map(doc => doc.id);
+            const requestsRef = collection(db, 'users', auth.currentUser.uid, 'sentFollowRequests');
+
+            const [followingSnap, requestsSnap] = await Promise.all([
+                 getDocs(followingRef),
+                 getDocs(requestsRef)
+            ]);
+            
+            const followingIds = followingSnap.docs.map(doc => doc.id);
+            const requestedUserIds = requestsSnap.docs.map(doc => doc.id);
             setFollowing(followingIds);
+            setRequestedIds(requestedUserIds);
         }
     };
     
     useEffect(() => {
-        fetchFollowing();
+        fetchFollowingAndRequests();
     }, []);
 
     useEffect(() => {
@@ -185,34 +198,67 @@ const Header: React.FC<HeaderProps> = ({ onSelectUser, onGoHome, onOpenCreatePos
 
     const handleFollow = async (targetUser: UserSearchResult) => {
         if (!auth.currentUser) return;
-        setFollowing(prev => [...prev, targetUser.id]);
-        
-        const currentUserFollowingRef = doc(db, 'users', auth.currentUser.uid, 'following', targetUser.id);
-        const targetUserFollowersRef = doc(db, 'users', targetUser.id, 'followers', auth.currentUser.uid);
-        const notificationRef = collection(db, 'users', targetUser.id, 'notifications');
 
-        try {
-            await setDoc(currentUserFollowingRef, {
-                username: targetUser.username,
-                avatar: targetUser.avatar,
-                timestamp: serverTimestamp()
-            });
-            await setDoc(targetUserFollowersRef, {
-                username: auth.currentUser.displayName,
-                avatar: auth.currentUser.photoURL,
-                timestamp: serverTimestamp()
-            });
-            await addDoc(notificationRef, {
-                type: 'follow',
-                fromUserId: auth.currentUser.uid,
-                fromUsername: auth.currentUser.displayName,
-                fromUserAvatar: auth.currentUser.photoURL,
-                timestamp: serverTimestamp(),
-                read: false,
-            });
-        } catch (error) {
-            console.error("Error following user:", error);
-            setFollowing(prev => prev.filter(id => id !== targetUser.id)); // Revert optimistic update
+        if (targetUser.isPrivate) {
+            // Send follow request
+            setRequestedIds(prev => [...prev, targetUser.id]);
+            const targetUserRequestRef = doc(db, 'users', targetUser.id, 'followRequests', auth.currentUser.uid);
+            const currentUserSentRequestRef = doc(db, 'users', auth.currentUser.uid, 'sentFollowRequests', targetUser.id);
+            const notificationRef = collection(db, 'users', targetUser.id, 'notifications');
+            try {
+                const batch = writeBatch(db);
+                batch.set(targetUserRequestRef, {
+                    username: auth.currentUser.displayName,
+                    avatar: auth.currentUser.photoURL,
+                    timestamp: serverTimestamp()
+                });
+                batch.set(currentUserSentRequestRef, {
+                    username: targetUser.username,
+                    avatar: targetUser.avatar,
+                    timestamp: serverTimestamp()
+                });
+                batch.set(doc(notificationRef), {
+                    type: 'follow_request',
+                    fromUserId: auth.currentUser.uid,
+                    fromUsername: auth.currentUser.displayName,
+                    fromUserAvatar: auth.currentUser.photoURL,
+                    timestamp: serverTimestamp(),
+                    read: false,
+                });
+                await batch.commit();
+            } catch (error) {
+                console.error("Error sending follow request:", error);
+                setRequestedIds(prev => prev.filter(id => id !== targetUser.id));
+            }
+        } else {
+            // Follow directly
+            setFollowing(prev => [...prev, targetUser.id]);
+            const currentUserFollowingRef = doc(db, 'users', auth.currentUser.uid, 'following', targetUser.id);
+            const targetUserFollowersRef = doc(db, 'users', targetUser.id, 'followers', auth.currentUser.uid);
+            const notificationRef = collection(db, 'users', targetUser.id, 'notifications');
+            try {
+                await setDoc(currentUserFollowingRef, {
+                    username: targetUser.username,
+                    avatar: targetUser.avatar,
+                    timestamp: serverTimestamp()
+                });
+                await setDoc(targetUserFollowersRef, {
+                    username: auth.currentUser.displayName,
+                    avatar: auth.currentUser.photoURL,
+                    timestamp: serverTimestamp()
+                });
+                await addDoc(notificationRef, {
+                    type: 'follow',
+                    fromUserId: auth.currentUser.uid,
+                    fromUsername: auth.currentUser.displayName,
+                    fromUserAvatar: auth.currentUser.photoURL,
+                    timestamp: serverTimestamp(),
+                    read: false,
+                });
+            } catch (error) {
+                console.error("Error following user:", error);
+                setFollowing(prev => prev.filter(id => id !== targetUser.id));
+            }
         }
     };
     
@@ -228,7 +274,25 @@ const Header: React.FC<HeaderProps> = ({ onSelectUser, onGoHome, onOpenCreatePos
             await deleteDoc(targetUserFollowersRef);
         } catch(error) {
             console.error("Error unfollowing user:", error);
-            setFollowing(prev => [...prev, targetUserId]); // Revert optimistic update
+            setFollowing(prev => [...prev, targetUserId]);
+        }
+    };
+
+     const handleCancelRequest = async (targetUserId: string) => {
+        if (!auth.currentUser) return;
+        setRequestedIds(prev => prev.filter(id => id !== targetUserId));
+        
+        const targetUserRequestRef = doc(db, 'users', targetUserId, 'followRequests', auth.currentUser.uid);
+        const currentUserSentRequestRef = doc(db, 'users', auth.currentUser.uid, 'sentFollowRequests', targetUserId);
+        
+        try {
+            const batch = writeBatch(db);
+            batch.delete(targetUserRequestRef);
+            batch.delete(currentUserSentRequestRef);
+            await batch.commit();
+        } catch (error) {
+            console.error("Error cancelling follow request:", error);
+            setRequestedIds(prev => [...prev, targetUserId]);
         }
     };
 
@@ -253,24 +317,112 @@ const Header: React.FC<HeaderProps> = ({ onSelectUser, onGoHome, onOpenCreatePos
             await batch.commit();
         }
     };
+
+    const handleAcceptFollowRequest = async (notification: Notification) => {
+        if (!currentUser) return;
     
+        const requesterId = notification.fromUserId;
+        const batch = writeBatch(db);
+    
+        // 1. Add to current user's followers
+        const followerRef = doc(db, 'users', currentUser.uid, 'followers', requesterId);
+        batch.set(followerRef, {
+            username: notification.fromUsername,
+            avatar: notification.fromUserAvatar,
+            timestamp: serverTimestamp()
+        });
+    
+        // 2. Add to requester's following
+        const followingRef = doc(db, 'users', requesterId, 'following', currentUser.uid);
+        batch.set(followingRef, {
+            username: currentUser.displayName,
+            avatar: currentUser.photoURL,
+            timestamp: serverTimestamp()
+        });
+    
+        // 3. Delete the follow request
+        const requestRef = doc(db, 'users', currentUser.uid, 'followRequests', requesterId);
+        batch.delete(requestRef);
+        const sentRequestRef = doc(db, 'users', requesterId, 'sentFollowRequests', currentUser.uid);
+        batch.delete(sentRequestRef);
+    
+        // 4. Delete the 'follow_request' notification
+        const notificationRef = doc(db, 'users', currentUser.uid, 'notifications', notification.id);
+        batch.delete(notificationRef);
+    
+        try {
+            await batch.commit();
+            setNotifications(prev => prev.filter(n => n.id !== notification.id));
+        } catch (error) {
+            console.error("Error accepting follow request:", error);
+        }
+    };
+    
+    const handleDeclineFollowRequest = async (notification: Notification) => {
+        if (!currentUser) return;
+        const requesterId = notification.fromUserId;
+    
+        const batch = writeBatch(db);
+        
+        // 1. Delete the follow request
+        const requestRef = doc(db, 'users', currentUser.uid, 'followRequests', requesterId);
+        batch.delete(requestRef);
+        const sentRequestRef = doc(db, 'users', requesterId, 'sentFollowRequests', currentUser.uid);
+        batch.delete(sentRequestRef);
+    
+        // 2. Delete the notification
+        const notificationRef = doc(db, 'users', currentUser.uid, 'notifications', notification.id);
+        batch.delete(notificationRef);
+    
+        try {
+            await batch.commit();
+            setNotifications(prev => prev.filter(n => n.id !== notification.id));
+        } catch (error) {
+            console.error("Error declining follow request:", error);
+        }
+    };
+
+
+    const handleNotificationClick = (notification: Notification) => {
+        if (notification.type === 'message' && notification.conversationId) {
+            onOpenMessages(notification.conversationId);
+        } else if (notification.type === 'follow') {
+            onSelectUser(notification.fromUserId);
+        }
+        // For follow_request, actions are handled by buttons, so no general click action
+        if(notification.type !== 'follow_request') {
+             setIsActivityDropdownOpen(false);
+        }
+    };
+    
+    const getButtonForUser = (user: UserSearchResult) => {
+        if (following.includes(user.id)) {
+            return <button onClick={(e) => { e.stopPropagation(); handleUnfollow(user.id); }} className="ml-auto text-sm font-semibold text-zinc-800 dark:text-zinc-200 bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 px-4 py-1 rounded-lg transition-colors">Following</button>;
+        }
+        if (requestedIds.includes(user.id)) {
+            return <button onClick={(e) => { e.stopPropagation(); handleCancelRequest(user.id); }} className="ml-auto text-sm font-semibold text-zinc-800 dark:text-zinc-200 bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 px-4 py-1 rounded-lg transition-colors">Requested</button>;
+        }
+        return <button onClick={(e) => { e.stopPropagation(); handleFollow(user); }} className="ml-auto text-sm font-semibold text-white bg-sky-500 hover:bg-sky-600 px-4 py-1 rounded-lg transition-colors">Follow</button>;
+    };
+
     const searchResultContent = (
         <>
            {isSearching && <SpinnerIcon />}
            {!isSearching && searchQuery && searchResults.length === 0 && <p className="text-center text-sm text-zinc-500 dark:text-zinc-400 p-4">No results found.</p>}
-           {!isSearching && searchResults.map(user => (
-               <button key={user.id} onClick={() => handleUserClick(user)} className="w-full text-left flex items-center p-2 hover:bg-zinc-50 dark:hover:bg-zinc-900 cursor-pointer">
-                   <img src={user.avatar} alt={user.username} className="w-11 h-11 rounded-full object-cover" />
+           {!isSearching && searchResults.map(user => {
+               const isOnline = user.lastSeen && (new Date().getTime() / 1000 - user.lastSeen.seconds) < 600;
+               return (
+               <div key={user.id} onClick={() => handleUserClick(user)} className="w-full text-left flex items-center p-2 hover:bg-zinc-50 dark:hover:bg-zinc-900 cursor-pointer">
+                   <div className="relative">
+                        <img src={user.avatar} alt={user.username} className="w-11 h-11 rounded-full object-cover" />
+                        {isOnline && <OnlineIndicator className="bottom-0 right-0" />}
+                   </div>
                    <div className="ml-3 flex-grow">
                        <p className="font-semibold text-sm">{user.username}</p>
                    </div>
-                   {following.includes(user.id) ? (
-                       <button onClick={(e) => { e.stopPropagation(); handleUnfollow(user.id); }} className="ml-auto text-sm font-semibold text-zinc-800 dark:text-zinc-200 bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 px-4 py-1 rounded-lg transition-colors">Following</button>
-                   ) : (
-                       <button onClick={(e) => { e.stopPropagation(); handleFollow(user); }} className="ml-auto text-sm font-semibold text-white bg-sky-500 hover:bg-sky-600 px-4 py-1 rounded-lg transition-colors">Follow</button>
-                   )}
-               </button>
-           ))}
+                   {getButtonForUser(user)}
+               </div>
+           )})}
         </>
     );
 
@@ -316,7 +468,7 @@ const Header: React.FC<HeaderProps> = ({ onSelectUser, onGoHome, onOpenCreatePos
                         <PlusCircleIcon className="w-6 h-6 text-zinc-800 dark:text-zinc-200 hover:text-zinc-500 dark:hover:text-zinc-400"/>
                     </button>
 
-                    <button onClick={onOpenMessages} className="relative">
+                    <button onClick={() => onOpenMessages()} className="relative">
                         <MessagesIcon className="w-6 h-6 text-zinc-800 dark:text-zinc-200 hover:text-zinc-500 dark:hover:text-zinc-400"/>
                     </button>
                     
@@ -331,11 +483,27 @@ const Header: React.FC<HeaderProps> = ({ onSelectUser, onGoHome, onOpenCreatePos
                              <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-white dark:bg-zinc-950 rounded-md shadow-lg border border-zinc-200 dark:border-zinc-800 z-20 max-h-96 overflow-y-auto">
                                 {notifications.length > 0 ? (
                                     notifications.map(notification => (
-                                        <div key={notification.id} className="flex items-center p-3 hover:bg-zinc-50 dark:hover:bg-zinc-900">
+                                        <div 
+                                            key={notification.id} 
+                                            onClick={() => handleNotificationClick(notification)}
+                                            className="flex items-center p-3 hover:bg-zinc-50 dark:hover:bg-zinc-900 cursor-pointer"
+                                        >
                                             <img src={notification.fromUserAvatar} alt={notification.fromUsername} className="w-11 h-11 rounded-full object-cover"/>
-                                            <p className="ml-3 text-sm flex-grow">
-                                                <span className="font-semibold">{notification.fromUsername}</span> started following you.
-                                            </p>
+                                            <div className="ml-3 text-sm flex-grow">
+                                                <p>
+                                                    <span className="font-semibold">{notification.fromUsername}</span>
+                                                    {notification.type === 'follow' ? ' started following you.' : 
+                                                     notification.type === 'message' ? ' sent you a message.' :
+                                                     ' wants to follow you.'
+                                                    }
+                                                </p>
+                                                {notification.type === 'follow_request' && (
+                                                    <div className="flex gap-2 mt-2">
+                                                        <button onClick={(e) => { e.stopPropagation(); handleAcceptFollowRequest(notification); }} className="text-sm font-semibold text-white bg-sky-500 hover:bg-sky-600 px-4 py-1 rounded-lg">Accept</button>
+                                                        <button onClick={(e) => { e.stopPropagation(); handleDeclineFollowRequest(notification); }} className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 px-4 py-1 rounded-lg">Decline</button>
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
                                     ))
                                 ) : (

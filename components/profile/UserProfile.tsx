@@ -19,9 +19,12 @@ import {
     where,
     orderBy,
     addDoc,
+    writeBatch,
+    onSnapshot,
 } from '../../firebase';
 import Button from '../common/Button';
 import EditProfileModal from './EditProfileModal';
+import OnlineIndicator from '../common/OnlineIndicator';
 
 const Spinner: React.FC = () => (
     <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-sky-500"></div>
@@ -41,6 +44,8 @@ type ProfileUserData = {
     username: string;
     avatar: string;
     bio?: string;
+    isPrivate?: boolean;
+    lastSeen?: { seconds: number; nanoseconds: number };
 };
 
 type Post = {
@@ -54,54 +59,130 @@ const UserProfile: React.FC<UserProfileProps> = ({ userId, onStartMessage }) => 
     const [posts, setPosts] = useState<Post[]>([]);
     const [stats, setStats] = useState({ posts: 0, followers: 0, following: 0 });
     const [isFollowing, setIsFollowing] = useState(false);
+    const [followRequestSent, setFollowRequestSent] = useState(false);
     const [loading, setLoading] = useState(true);
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const [isUpdating, setIsUpdating] = useState(false);
     const currentUser = auth.currentUser;
 
     useEffect(() => {
-        const fetchUserData = async () => {
-            setLoading(true);
-            try {
-                const userDocRef = doc(db, 'users', userId);
-                const userDocSnap = await getDoc(userDocRef);
+        setLoading(true);
+        const userDocRef = doc(db, 'users', userId);
 
-                if (userDocSnap.exists()) {
-                    setUser(userDocSnap.data() as ProfileUserData);
-                } else {
-                    console.error("No such user!");
+        const unsubscribe = onSnapshot(userDocRef, async (userDocSnap) => {
+            if (!userDocSnap.exists()) {
+                console.error("No such user!");
+                setUser(null);
+                setLoading(false);
+                return;
+            }
+
+            const userData = userDocSnap.data() as ProfileUserData;
+            setUser(userData);
+
+            const followersQuery = collection(db, 'users', userId, 'followers');
+            const followingQuery = collection(db, 'users', userId, 'following');
+            const postsQuery = query(collection(db, 'posts'), where('userId', '==', userId), orderBy('timestamp', 'desc'));
+
+            const [followersSnap, followingSnap, postsSnap] = await Promise.all([
+                getDocs(followersQuery),
+                getDocs(followingQuery),
+                getDocs(postsQuery)
+            ]);
+            
+            setStats({ posts: postsSnap.size, followers: followersSnap.size, following: followingSnap.size });
+
+            let userIsFollowing = false;
+            if (currentUser && currentUser.uid !== userId) {
+                const followingDoc = await getDoc(doc(db, 'users', currentUser.uid, 'following', userId));
+                userIsFollowing = followingDoc.exists();
+                setIsFollowing(userIsFollowing);
+
+                if (userData.isPrivate && !userIsFollowing) {
+                    const requestDoc = await getDoc(doc(db, 'users', userId, 'followRequests', currentUser.uid));
+                    setFollowRequestSent(requestDoc.exists());
                 }
-
-                const followersQuery = collection(db, 'users', userId, 'followers');
-                const followingQuery = collection(db, 'users', userId, 'following');
-                const postsQuery = query(collection(db, 'posts'), where('userId', '==', userId), orderBy('timestamp', 'desc'));
-
-                const [followersSnap, followingSnap, postsSnap] = await Promise.all([
-                    getDocs(followersQuery),
-                    getDocs(followingQuery),
-                    getDocs(postsQuery)
-                ]);
-
+            }
+            
+            if (currentUser?.uid === userId || !userData.isPrivate || userIsFollowing) {
                 const userPosts = postsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Post));
                 setPosts(userPosts);
-
-                setStats({ posts: userPosts.length, followers: followersSnap.size, following: followingSnap.size });
-
-                if (currentUser) {
-                    const followingDoc = await getDoc(doc(db, 'users', currentUser.uid, 'following', userId));
-                    setIsFollowing(followingDoc.exists());
-                }
-            } catch (error) {
-                console.error("Error fetching user data:", error);
-            } finally {
-                setLoading(false);
+            } else {
+                setPosts([]);
             }
-        };
 
-        fetchUserData();
+            setLoading(false);
+        }, (error) => {
+            console.error("Error fetching user data:", error);
+            setLoading(false);
+        });
+
+        return () => unsubscribe();
     }, [userId, currentUser]);
 
-    const handleFollow = async () => {
+    const handleFollowAction = async () => {
+        if (!currentUser || !user) return;
+        if(user.isPrivate) {
+            handleSendFollowRequest();
+        } else {
+            handleFollowPublic();
+        }
+    };
+    
+    const handleSendFollowRequest = async () => {
+        if (!currentUser || !user) return;
+        setFollowRequestSent(true);
+
+        const targetUserRequestRef = doc(db, 'users', userId, 'followRequests', currentUser.uid);
+        const currentUserSentRequestRef = doc(db, 'users', currentUser.uid, 'sentFollowRequests', userId);
+        const notificationRef = doc(collection(db, 'users', userId, 'notifications'));
+
+        try {
+            const batch = writeBatch(db);
+            batch.set(targetUserRequestRef, {
+                username: currentUser.displayName,
+                avatar: currentUser.photoURL,
+                timestamp: serverTimestamp()
+            });
+            batch.set(currentUserSentRequestRef, {
+                username: user.username,
+                avatar: user.avatar,
+                timestamp: serverTimestamp()
+            });
+            batch.set(notificationRef, {
+                type: 'follow_request',
+                fromUserId: currentUser.uid,
+                fromUsername: currentUser.displayName,
+                fromUserAvatar: currentUser.photoURL,
+                timestamp: serverTimestamp(),
+                read: false,
+            });
+            await batch.commit();
+        } catch (error) {
+            console.error("Error sending follow request:", error);
+            setFollowRequestSent(false); // Revert on failure
+        }
+    };
+
+    const handleCancelFollowRequest = async () => {
+        if (!currentUser) return;
+        setFollowRequestSent(false);
+
+        const targetUserRequestRef = doc(db, 'users', userId, 'followRequests', currentUser.uid);
+        const currentUserSentRequestRef = doc(db, 'users', currentUser.uid, 'sentFollowRequests', userId);
+
+        try {
+            const batch = writeBatch(db);
+            batch.delete(targetUserRequestRef);
+            batch.delete(currentUserSentRequestRef);
+            await batch.commit();
+        } catch (error) {
+            console.error("Error cancelling follow request:", error);
+            setFollowRequestSent(true); // Revert on failure
+        }
+    };
+
+    const handleFollowPublic = async () => {
         if (!currentUser || !user) return;
         setIsFollowing(true);
         setStats(prev => ({ ...prev, followers: prev.followers + 1 }));
@@ -109,7 +190,6 @@ const UserProfile: React.FC<UserProfileProps> = ({ userId, onStartMessage }) => 
         const currentUserFollowingRef = doc(db, 'users', currentUser.uid, 'following', userId);
         const targetUserFollowersRef = doc(db, 'users', userId, 'followers', currentUser.uid);
         const notificationRef = collection(db, 'users', userId, 'notifications');
-
 
         try {
             await setDoc(currentUserFollowingRef, {
@@ -155,7 +235,7 @@ const UserProfile: React.FC<UserProfileProps> = ({ userId, onStartMessage }) => 
         }
     };
     
-    const handleProfileUpdate = async ({ username, bio, avatarFile }: { username: string; bio: string; avatarFile: File | null; }) => {
+    const handleProfileUpdate = async ({ username, bio, avatarFile, isPrivate }: { username: string; bio: string; avatarFile: File | null; isPrivate: boolean }) => {
         if (!currentUser) return;
         setIsUpdating(true);
         
@@ -169,7 +249,6 @@ const UserProfile: React.FC<UserProfileProps> = ({ userId, onStartMessage }) => 
                 const storageRef = ref(storage, `avatars/${currentUser.uid}/${Date.now()}-${avatarFile.name}`);
                 await uploadBytes(storageRef, avatarFile);
                 newAvatarUrl = await getDownloadURL(storageRef);
-                
                 firestoreUpdates.avatar = newAvatarUrl;
                 authUpdates.photoURL = newAvatarUrl;
             }
@@ -182,6 +261,9 @@ const UserProfile: React.FC<UserProfileProps> = ({ userId, onStartMessage }) => 
             if (bio !== (user?.bio || '')) {
                 firestoreUpdates.bio = bio;
             }
+            if (isPrivate !== (user?.isPrivate || false)) {
+                firestoreUpdates.isPrivate = isPrivate;
+            }
 
             if (Object.keys(firestoreUpdates).length > 0) {
                 await updateDoc(userDocRef, firestoreUpdates);
@@ -193,65 +275,48 @@ const UserProfile: React.FC<UserProfileProps> = ({ userId, onStartMessage }) => 
 
             setUser(prev => {
                 if (!prev) return null;
-                return { ...prev, username, bio, avatar: newAvatarUrl || prev.avatar };
+                return { ...prev, username, bio, isPrivate, avatar: newAvatarUrl || prev.avatar };
             });
             window.dispatchEvent(new CustomEvent('profileUpdated'));
             setIsEditModalOpen(false);
         } catch (error) {
             console.error("Error updating profile: ", error);
-            // Re-throw the error to be caught by the modal's handler
             throw error;
         } finally {
             setIsUpdating(false);
         }
     };
 
+    const renderFollowButton = () => {
+        if (currentUser?.uid === userId) {
+            return <Button onClick={() => setIsEditModalOpen(true)} className="!w-auto !bg-zinc-200 dark:!bg-zinc-700 !text-black dark:!text-white hover:!bg-zinc-300 dark:hover:!bg-zinc-600">Edit Profile</Button>;
+        }
+        return (
+            <div className="flex items-center gap-2">
+                {isFollowing ? (
+                    <Button onClick={handleUnfollow} className="!w-auto !bg-zinc-200 dark:!bg-zinc-700 !text-black dark:!text-white hover:!bg-zinc-300 dark:hover:!bg-zinc-600">Following</Button>
+                ) : followRequestSent ? (
+                    <Button onClick={handleCancelFollowRequest} className="!w-auto !bg-zinc-200 dark:!bg-zinc-700 !text-black dark:!text-white hover:!bg-zinc-300 dark:hover:!bg-zinc-600">Requested</Button>
+                ) : (
+                    <Button onClick={handleFollowAction} className="!w-auto">Follow</Button>
+                )}
+                 <Button onClick={() => onStartMessage({ id: userId, username: user!.username, avatar: user!.avatar })} className="!w-auto !bg-zinc-200 dark:!bg-zinc-700 !text-black dark:!text-white hover:!bg-zinc-300 dark:hover:!bg-zinc-600">Message</Button>
+            </div>
+        );
+    };
 
-    if (loading) {
-        return <div className="flex justify-center items-center p-8"><Spinner /></div>;
-    }
-    
-    if (!user) {
-        return <p className="text-center p-8 text-zinc-500 dark:text-zinc-400">User not found.</p>;
-    }
+    const renderContent = () => {
+        if (user?.isPrivate && !isFollowing && currentUser?.uid !== userId) {
+            return (
+                <div className="flex flex-col justify-center items-center p-16 text-center border-t border-zinc-300 dark:border-zinc-700">
+                    <h3 className="text-xl font-semibold">This Account is Private</h3>
+                    <p className="text-zinc-500 dark:text-zinc-400 mt-2">Follow to see their photos and videos.</p>
+                </div>
+            );
+        }
 
-    return (
-        <>
-        <div className="container mx-auto max-w-4xl p-4 sm:p-8">
-            <header className="flex flex-col sm:flex-row items-center gap-4 sm:gap-16 mb-8">
-                <div className="w-36 h-36 sm:w-40 sm:h-40 flex-shrink-0">
-                    <img src={user.avatar} alt={user.username} className="w-full h-full rounded-full object-cover border-2 dark:border-zinc-800 p-1" />
-                </div>
-                <div className="flex flex-col gap-4 items-center sm:items-start w-full">
-                    <div className="flex items-center gap-4">
-                        <h2 className="text-2xl font-light">{user.username}</h2>
-                        { currentUser?.uid === userId ? (
-                             <Button onClick={() => setIsEditModalOpen(true)} className="!w-auto !bg-zinc-200 dark:!bg-zinc-700 !text-black dark:!text-white hover:!bg-zinc-300 dark:hover:!bg-zinc-600">Edit Profile</Button>
-                        ) : (
-                            <div className="flex items-center gap-2">
-                                {isFollowing ? (
-                                    <Button onClick={handleUnfollow} className="!w-auto !bg-zinc-200 dark:!bg-zinc-700 !text-black dark:!text-white hover:!bg-zinc-300 dark:hover:!bg-zinc-600">Following</Button>
-                                ) : (
-                                    <Button onClick={handleFollow} className="!w-auto">Follow</Button>
-                                )}
-                                <Button onClick={() => onStartMessage({ id: userId, username: user.username, avatar: user.avatar })} className="!w-auto !bg-zinc-200 dark:!bg-zinc-700 !text-black dark:!text-white hover:!bg-zinc-300 dark:hover:!bg-zinc-600">Message</Button>
-                            </div>
-                        )}
-                       
-                    </div>
-                    <div className="flex items-center gap-8 text-sm">
-                        <span><span className="font-semibold">{stats.posts}</span> posts</span>
-                        <span><span className="font-semibold">{stats.followers}</span> followers</span>
-                        <span><span className="font-semibold">{stats.following}</span> following</span>
-                    </div>
-                     {user.bio && (
-                        <div className="text-sm pt-2 text-center sm:text-left">
-                            <p className="whitespace-pre-wrap">{user.bio}</p>
-                        </div>
-                    )}
-                </div>
-            </header>
-            <div className="border-t border-zinc-300 dark:border-zinc-700 pt-2">
+        return (
+             <div className="border-t border-zinc-300 dark:border-zinc-700 pt-2">
                 <div className="flex justify-center gap-8 text-xs font-semibold text-zinc-500 dark:text-zinc-400">
                     <button className="flex items-center gap-2 text-sky-500 border-t-2 border-sky-500 pt-2 -mt-0.5">
                         <GridIcon className="w-4 h-4"/> POSTS
@@ -274,6 +339,46 @@ const UserProfile: React.FC<UserProfileProps> = ({ userId, onStartMessage }) => 
                     </div>
                 )}
             </div>
+        )
+    }
+
+
+    if (loading) {
+        return <div className="flex justify-center items-center p-8"><Spinner /></div>;
+    }
+    
+    if (!user) {
+        return <p className="text-center p-8 text-zinc-500 dark:text-zinc-400">User not found.</p>;
+    }
+
+    const isOnline = user.lastSeen && (new Date().getTime() / 1000 - user.lastSeen.seconds) < 600; // 10 minutes
+
+    return (
+        <>
+        <div className="container mx-auto max-w-4xl p-4 sm:p-8">
+            <header className="flex flex-col sm:flex-row items-center gap-4 sm:gap-16 mb-8">
+                <div className="w-36 h-36 sm:w-40 sm:h-40 flex-shrink-0 relative">
+                    <img src={user.avatar} alt={user.username} className="w-full h-full rounded-full object-cover border-2 dark:border-zinc-800 p-1" />
+                    {isOnline && <OnlineIndicator className="bottom-2 right-2" />}
+                </div>
+                <div className="flex flex-col gap-4 items-center sm:items-start w-full">
+                    <div className="flex items-center gap-4">
+                        <h2 className="text-2xl font-light">{user.username}</h2>
+                        {renderFollowButton()}
+                    </div>
+                    <div className="flex items-center gap-8 text-sm">
+                        <span><span className="font-semibold">{stats.posts}</span> posts</span>
+                        <span><span className="font-semibold">{stats.followers}</span> followers</span>
+                        <span><span className="font-semibold">{stats.following}</span> following</span>
+                    </div>
+                     {user.bio && (
+                        <div className="text-sm pt-2 text-center sm:text-left">
+                            <p className="whitespace-pre-wrap">{user.bio}</p>
+                        </div>
+                    )}
+                </div>
+            </header>
+            {renderContent()}
         </div>
         {user && (
             <EditProfileModal 

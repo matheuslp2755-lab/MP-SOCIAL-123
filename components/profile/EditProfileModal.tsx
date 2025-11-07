@@ -11,14 +11,16 @@ interface EditProfileModalProps {
     username: string;
     avatar: string;
     bio?: string;
+    isPrivate?: boolean;
   };
-  onUpdate: (updatedData: { username: string; bio: string; avatarFile: File | null; }) => Promise<void>;
+  onUpdate: (updatedData: { username: string; bio: string; avatarFile: File | null; isPrivate: boolean; }) => Promise<void>;
   isSubmitting: boolean;
 }
 
 const EditProfileModal: React.FC<EditProfileModalProps> = ({ isOpen, onClose, user, onUpdate, isSubmitting }) => {
   const [username, setUsername] = useState(user.username);
   const [bio, setBio] = useState(user.bio || '');
+  const [isPrivate, setIsPrivate] = useState(user.isPrivate || false);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -29,6 +31,7 @@ const EditProfileModal: React.FC<EditProfileModalProps> = ({ isOpen, onClose, us
     if (isOpen) {
       setUsername(user.username);
       setBio(user.bio || '');
+      setIsPrivate(user.isPrivate || false);
       setAvatarFile(null);
       setAvatarPreview(null);
       setError('');
@@ -50,7 +53,7 @@ const EditProfileModal: React.FC<EditProfileModalProps> = ({ isOpen, onClose, us
     e.preventDefault();
     setError('');
     try {
-        await onUpdate({ username, bio, avatarFile });
+        await onUpdate({ username, bio, avatarFile, isPrivate });
         // onClose will be called by parent on success
     } catch (err) {
         console.error(err);
@@ -106,6 +109,22 @@ const EditProfileModal: React.FC<EditProfileModalProps> = ({ isOpen, onClose, us
                         value={bio}
                         onChange={(e) => setBio(e.target.value)}
                     />
+                     <div className="flex items-center justify-between w-full mt-2">
+                        <div>
+                            <label htmlFor="private-account" className="font-semibold text-sm">{t('editProfile.privateAccount')}</label>
+                            <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('editProfile.privateAccountInfo')}</p>
+                        </div>
+                        <label htmlFor="private-account" className="relative inline-flex items-center cursor-pointer">
+                            <input 
+                                type="checkbox" 
+                                id="private-account" 
+                                className="sr-only peer"
+                                checked={isPrivate}
+                                onChange={() => setIsPrivate(!isPrivate)}
+                            />
+                            <div className="w-11 h-6 bg-zinc-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-sky-300 dark:peer-focus:ring-sky-800 rounded-full peer dark:bg-zinc-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-zinc-600 peer-checked:bg-sky-600"></div>
+                        </label>
+                    </div>
                 </div>
             </div>
             <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 flex flex-col items-end">

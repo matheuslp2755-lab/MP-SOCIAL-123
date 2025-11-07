@@ -12,8 +12,11 @@ import {
     deleteDoc,
     updateDoc,
     getDocs,
-    limit
+    limit,
+    getDoc
 } from '../../firebase';
+import ConnectionCrystal from './ConnectionCrystal';
+import OnlineIndicator from '../common/OnlineIndicator';
 
 interface ChatWindowProps {
     conversationId: string | null;
@@ -33,6 +36,39 @@ interface OtherUser {
     avatar: string;
 }
 
+type CrystalLevel = 'BRILHANTE' | 'EQUILIBRADO' | 'APAGADO' | 'RACHADO';
+
+interface CrystalData {
+    createdAt: any;
+    lastInteractionAt: any;
+    level: CrystalLevel;
+    streak: number;
+}
+
+interface ConversationData {
+    participants: string[];
+    participantInfo: {
+        [key: string]: {
+            username: string;
+            avatar: string;
+            lastSeenMessageTimestamp?: any;
+        }
+    };
+    crystal?: CrystalData;
+}
+
+
+// FIX: Corrected the `useRef` call inside the `usePrevious` hook. The generic type `T` was causing it to match an overload that requires an initial value. Changing it to `T | undefined` allows it to match the overload with no arguments.
+function usePrevious<T>(value: T): T | undefined {
+    // FIX: Changed useRef<T> to useRef<T | undefined> to fix the "Expected 1 arguments, but got 0" error.
+    const ref = useRef<T | undefined>();
+    useEffect(() => {
+        ref.current = value;
+    });
+    return ref.current;
+}
+
+
 const TrashIcon: React.FC<{className?: string}> = ({ className }) => (
     <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -43,66 +79,210 @@ const BackArrowIcon: React.FC<{className?: string}> = ({ className }) => (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg>
 );
 
-
 const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [newMessage, setNewMessage] = useState('');
     const [otherUser, setOtherUser] = useState<OtherUser | null>(null);
+    const [isOtherUserOnline, setIsOtherUserOnline] = useState(false);
+    const [conversationData, setConversationData] = useState<ConversationData | null>(null);
+    const [crystalData, setCrystalData] = useState<CrystalData | null>(null);
     const [loading, setLoading] = useState(false);
     const [showDeleteConfirm, setShowDeleteConfirm] = useState<{ open: boolean, messageId: string | null }>({ open: false, messageId: null });
+    
+    type AnimationState = 'idle' | 'forming' | 'settling';
+    const [animationState, setAnimationState] = useState<AnimationState>('idle');
+    const [animationMessage, setAnimationMessage] = useState('');
+    const [finalCrystalPos, setFinalCrystalPos] = useState({ top: 0, left: 0, width: 0, height: 0 });
+
     const currentUser = auth.currentUser;
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const crystalHeaderRef = useRef<HTMLDivElement>(null);
+    const dialogRef = useRef<HTMLDivElement>(null);
+    const prevCrystalData = usePrevious(crystalData);
+    const unsubUserStatusRef = useRef<(() => void) | null>(null);
 
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
     }, [messages]);
+    
+    useEffect(() => {
+        if (!crystalData || !crystalHeaderRef.current || !dialogRef.current) return;
+
+        const now = new Date();
+        const createdAt = crystalData.createdAt.toDate();
+        const justCreated = (now.getTime() - createdAt.getTime()) < 5000; // 5 seconds threshold
+
+        const upgradedToBrilhante = crystalData.level === 'BRILHANTE' && prevCrystalData?.level && prevCrystalData.level !== 'BRILHANTE';
+
+        if (justCreated || upgradedToBrilhante) {
+            const rect = crystalHeaderRef.current.getBoundingClientRect();
+            const modalRect = dialogRef.current.getBoundingClientRect();
+           
+            setFinalCrystalPos({
+                top: rect.top - modalRect.top,
+                left: rect.left - modalRect.left,
+                width: rect.width,
+                height: rect.height
+            });
+
+            setAnimationMessage(justCreated ? '💎 Um novo Cristal de Conexão foi formado!' : '💎 Sua conexão está brilhando!');
+            setAnimationState('forming');
+
+            const settlingTimer = setTimeout(() => {
+                setAnimationState('settling');
+            }, 4000); // Wait 4s before moving
+
+            return () => {
+                clearTimeout(settlingTimer);
+            };
+        }
+    }, [crystalData, prevCrystalData]);
 
     useEffect(() => {
         if (!conversationId || !currentUser) {
             setMessages([]);
             setOtherUser(null);
+            setCrystalData(null);
+            setConversationData(null);
             return;
         }
 
         setLoading(true);
 
-        const unsubConversation = onSnapshot(doc(db, 'conversations', conversationId), (doc) => {
-            const data = doc.data();
+        const unsubConversation = onSnapshot(doc(db, 'conversations', conversationId), (docSnap) => {
+            const data = docSnap.data() as ConversationData;
             if (data) {
+                setConversationData(data);
                 const otherUserId = data.participants.find((p: string) => p !== currentUser.uid);
-                const otherUserInfo = data.participantInfo[otherUserId];
-                setOtherUser({
-                    id: otherUserId,
-                    username: otherUserInfo?.username || 'User',
-                    avatar: otherUserInfo?.avatar || `https://i.pravatar.cc/150?u=${otherUserId}`,
-                });
+                
+                if(otherUserId) {
+                    const otherUserInfo = data.participantInfo[otherUserId];
+                    setOtherUser({
+                        id: otherUserId,
+                        username: otherUserInfo?.username || 'User',
+                        avatar: otherUserInfo?.avatar || `https://i.pravatar.cc/150?u=${otherUserId}`,
+                    });
+
+                    if (!unsubUserStatusRef.current) {
+                        const userDocRef = doc(db, 'users', otherUserId);
+                        unsubUserStatusRef.current = onSnapshot(userDocRef, (userSnap) => {
+                            if (userSnap.exists()) {
+                                const lastSeen = userSnap.data().lastSeen;
+                                const isOnline = lastSeen && (new Date().getTime() / 1000 - lastSeen.seconds) < 600;
+                                setIsOtherUserOnline(isOnline);
+                            } else {
+                                setIsOtherUserOnline(false);
+                            }
+                        });
+                    }
+                }
+
+
+                if (data.crystal) {
+                    const lastInteractionDate = data.crystal.lastInteractionAt.toDate();
+                    const now = new Date();
+                    const diffHours = (now.getTime() - lastInteractionDate.getTime()) / (1000 * 60 * 60);
+
+                    let calculatedLevel: CrystalLevel = data.crystal.level;
+                    if (diffHours <= 24) {
+                        calculatedLevel = 'BRILHANTE';
+                    } else if (diffHours > 24 && diffHours <= 72) {
+                        calculatedLevel = 'EQUILIBRADO';
+                    } else if (diffHours > 72 && diffHours <= 168) {
+                        calculatedLevel = 'APAGADO';
+                    } else if (diffHours > 168) {
+                        calculatedLevel = 'RACHADO';
+                    }
+                    
+                    setCrystalData({ ...data.crystal, level: calculatedLevel });
+                } else {
+                    setCrystalData(null);
+                }
             }
         });
 
         const messagesQuery = query(collection(db, 'conversations', conversationId, 'messages'), orderBy('timestamp', 'asc'));
-        const unsubMessages = onSnapshot(messagesQuery, (snapshot) => {
+        const unsubMessages = onSnapshot(messagesQuery, async (snapshot) => {
             const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
             setMessages(msgs);
+
+            const lastOtherUserMessage = [...msgs].reverse().find(m => m.senderId !== currentUser.uid);
+            
+            if (lastOtherUserMessage) {
+                const convRef = doc(db, 'conversations', conversationId);
+                const convSnap = await getDoc(convRef);
+                const convData = convSnap.data() as ConversationData;
+                const currentUserInfo = convData?.participantInfo?.[currentUser.uid];
+
+                if (!currentUserInfo?.lastSeenMessageTimestamp || 
+                    lastOtherUserMessage.timestamp?.seconds > currentUserInfo.lastSeenMessageTimestamp.seconds) {
+                    
+                    await updateDoc(convRef, {
+                        [`participantInfo.${currentUser.uid}.lastSeenMessageTimestamp`]: lastOtherUserMessage.timestamp
+                    });
+                }
+            }
+            
             setLoading(false);
         });
 
         return () => {
             unsubConversation();
             unsubMessages();
+            if (unsubUserStatusRef.current) {
+                unsubUserStatusRef.current();
+                unsubUserStatusRef.current = null;
+            }
         };
     }, [conversationId, currentUser]);
 
     const handleSendMessage = async (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
-        if (newMessage.trim() === '' || !currentUser || !conversationId) return;
+        if (newMessage.trim() === '' || !currentUser || !conversationId || !otherUser) return;
 
         const tempMessage = newMessage;
         setNewMessage('');
 
         const conversationRef = doc(db, 'conversations', conversationId);
         const messagesRef = collection(conversationRef, 'messages');
+        const recipientNotificationRef = doc(collection(db, 'users', otherUser.id, 'notifications'));
 
         try {
+            const conversationSnap = await getDoc(conversationRef);
+            const currentData = conversationSnap.data();
+            
+            let newStreak = 1;
+            if (currentData?.crystal?.lastInteractionAt) {
+                const lastInteractionDate = currentData.crystal.lastInteractionAt.toDate();
+                
+                const isYesterday = (d: Date) => {
+                    const today = new Date();
+                    const yesterday = new Date(today);
+                    yesterday.setDate(today.getDate() - 1);
+                    return d.getFullYear() === yesterday.getFullYear() && d.getMonth() === yesterday.getMonth() && d.getDate() === yesterday.getDate();
+                };
+
+                const isToday = (d: Date) => {
+                    const today = new Date();
+                    return d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+                };
+
+                if (isYesterday(lastInteractionDate)) {
+                    newStreak = (currentData.crystal.streak || 0) + 1;
+                } else if (isToday(lastInteractionDate)) {
+                    newStreak = currentData.crystal.streak || 1;
+                }
+            }
+
+            const crystalUpdate = {
+                crystal: {
+                    createdAt: currentData?.crystal?.createdAt || serverTimestamp(),
+                    lastInteractionAt: serverTimestamp(),
+                    level: 'BRILHANTE',
+                    streak: newStreak,
+                }
+            };
+            
             const batch = writeBatch(db);
             
             const newMessageRef = doc(messagesRef);
@@ -116,8 +296,20 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
                 lastMessage: {
                     text: tempMessage,
                     senderId: currentUser.uid,
+                    timestamp: serverTimestamp(),
                 },
                 updatedAt: serverTimestamp(),
+                ...crystalUpdate,
+            });
+
+            batch.set(recipientNotificationRef, {
+                type: 'message',
+                fromUserId: currentUser.uid,
+                fromUsername: currentUser.displayName,
+                fromUserAvatar: currentUser.photoURL,
+                conversationId: conversationId,
+                timestamp: serverTimestamp(),
+                read: false,
             });
             
             await batch.commit();
@@ -151,6 +343,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
                     lastMessage: {
                         text: lastMessage.text,
                         senderId: lastMessage.senderId,
+                        timestamp: lastMessage.timestamp,
                     }
                 };
             }
@@ -160,6 +353,26 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
             console.error("Error deleting message:", error);
         }
     };
+
+    const getCrystalStatusText = (level: CrystalLevel) => {
+        const statuses = {
+            BRILHANTE: 'Brilhante',
+            EQUILIBRADO: 'Equilibrado',
+            APAGADO: 'Apagado',
+            RACHADO: 'Rachado',
+        };
+        return statuses[level] || '';
+    }
+
+    const lastSentMessageIndex = messages.map(m => m.senderId).lastIndexOf(currentUser?.uid);
+    let shouldShowSeen = false;
+    if (lastSentMessageIndex !== -1 && otherUser && conversationData) {
+        const lastSentMessage = messages[lastSentMessageIndex];
+        const otherUserInfo = conversationData.participantInfo[otherUser.id];
+        if (otherUserInfo?.lastSeenMessageTimestamp && lastSentMessage.timestamp?.seconds <= otherUserInfo.lastSeenMessageTimestamp.seconds) {
+            shouldShowSeen = true;
+        }
+    }
 
 
     if (loading) {
@@ -178,14 +391,32 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
 
 
     return (
-        <div className="flex flex-col h-full">
+        <div className="flex flex-col h-full relative" ref={dialogRef}>
             {otherUser && (
-                <header className="flex items-center gap-4 p-4 border-b border-zinc-200 dark:border-zinc-800 flex-shrink-0">
+                <header className="flex items-center gap-3 p-4 border-b border-zinc-200 dark:border-zinc-800 flex-shrink-0">
                     <button onClick={onBack} aria-label="Back to conversations">
                        <BackArrowIcon className="w-6 h-6" />
                     </button>
-                    <img src={otherUser.avatar} alt={otherUser.username} className="w-10 h-10 rounded-full object-cover" />
-                    <p className="font-semibold">{otherUser.username}</p>
+                    <div className="relative">
+                        <img src={otherUser.avatar} alt={otherUser.username} className="w-10 h-10 rounded-full object-cover" />
+                        {isOtherUserOnline && <OnlineIndicator className="bottom-0 right-0 h-3 w-3" />}
+                    </div>
+                    <div className="flex-grow">
+                        <p className="font-semibold">{otherUser.username}</p>
+                        {crystalData && (
+                            <div 
+                                ref={crystalHeaderRef} 
+                                className={`flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400 transition-opacity duration-300 ${animationState !== 'idle' ? 'opacity-0' : 'opacity-100'}`} 
+                                title={`Cristal de Conexão: ${getCrystalStatusText(crystalData.level)}`}
+                            >
+                                <ConnectionCrystal level={crystalData.level} className="w-4 h-4" />
+                                <span>{getCrystalStatusText(crystalData.level)}</span>
+                                {crystalData.streak > 1 && (
+                                    <span title={`${crystalData.streak} dias de interação seguida`}>🔥 {crystalData.streak}</span>
+                                )}
+                            </div>
+                        )}
+                    </div>
                 </header>
             )}
             <div className="flex-grow p-4 overflow-y-auto">
@@ -212,17 +443,22 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
                             </div>
                         </div>
                     ))}
+                    {shouldShowSeen && (
+                         <div className="flex justify-end pr-2">
+                             <p className="text-xs text-zinc-500 dark:text-zinc-400">Visto</p>
+                         </div>
+                    )}
                     <div ref={messagesEndRef} />
                 </div>
             </div>
             <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 flex-shrink-0">
                 <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-                    <input 
+                     <input 
                         type="text"
                         value={newMessage}
                         onChange={(e) => setNewMessage(e.target.value)}
                         placeholder="Message..."
-                        className="w-full bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-full py-2 px-4 text-sm focus:outline-none focus:border-sky-500"
+                        className="w-full bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-full py-2 pl-4 pr-4 text-sm focus:outline-none focus:border-sky-500"
                     />
                     <button type="submit" disabled={!newMessage.trim()} className="text-sky-500 font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed px-2">
                         Send
@@ -255,6 +491,46 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
                             </button>
                         </div>
                     </div>
+                </div>
+            )}
+            {animationState !== 'idle' && (
+                <div className="absolute inset-0 bg-black bg-opacity-30 z-10 flex flex-col justify-center items-center pointer-events-none">
+                    <div
+                        onTransitionEnd={() => {
+                            if (animationState === 'settling') {
+                                setAnimationState('idle');
+                            }
+                        }}
+                        className="absolute transition-all duration-1000 ease-in-out"
+                        style={
+                            animationState === 'forming'
+                            ? {
+                                top: '50%',
+                                left: '50%',
+                                transform: 'translate(-50%, -50%)',
+                                width: '96px', // w-24
+                                height: '96px', // h-24
+                            }
+                            : { // 'settling'
+                                top: `${finalCrystalPos.top}px`,
+                                left: `${finalCrystalPos.left}px`,
+                                width: `${finalCrystalPos.width}px`,
+                                height: `${finalCrystalPos.height}px`,
+                                transform: 'translate(0, 0)',
+                            }
+                        }
+                    >
+                        <ConnectionCrystal level="BRILHANTE" className="w-full h-full" />
+                    </div>
+                    <p
+                        className="text-white text-lg font-semibold mt-40 transition-opacity duration-500"
+                        style={{
+                            opacity: animationState === 'forming' ? 1 : 0,
+                            textShadow: '0 2px 4px rgba(0,0,0,0.5)',
+                        }}
+                    >
+                        {animationMessage}
+                    </p>
                 </div>
             )}
         </div>

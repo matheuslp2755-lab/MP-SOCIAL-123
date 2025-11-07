@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
-import { auth, db, setDoc, doc, storage, ref, uploadBytes, getDownloadURL } from '../firebase';
+import { auth, db, setDoc, doc, storage, ref, uploadBytes, getDownloadURL, serverTimestamp } from '../firebase';
 import TextInput from '../components/common/TextInput';
 import Button from '../components/common/Button';
 
@@ -70,6 +70,8 @@ const SignUp: React.FC<SignUpProps> = ({ onSwitchMode }) => {
         avatar: avatarUrl,
         bio: '',
         language: 'en',
+        isPrivate: false,
+        lastSeen: serverTimestamp(),
       });
       // Auth state change will be handled by App.tsx
     } catch (err: any) {

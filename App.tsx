@@ -1,6 +1,6 @@
 import React, { useState, useEffect, StrictMode } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth } from './firebase';
+import { auth, db, doc, updateDoc, serverTimestamp } from './firebase';
 import Login from './components/Login';
 import SignUp from './context/SignUp';
 import Feed from './components/Feed';
@@ -19,6 +19,37 @@ const AppContent: React.FC = () => {
     });
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const userDocRef = doc(db, 'users', user.uid);
+
+    const updateUserLastSeen = () => {
+        updateDoc(userDocRef, {
+            lastSeen: serverTimestamp()
+        }).catch(err => console.error("Failed to update last seen:", err));
+    };
+
+    updateUserLastSeen();
+
+    const intervalId = setInterval(updateUserLastSeen, 5 * 60 * 1000); // every 5 minutes
+
+    const handleVisibilityChange = () => {
+        if (document.visibilityState === 'visible') {
+            updateUserLastSeen();
+        }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', updateUserLastSeen);
+
+    return () => {
+      clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', updateUserLastSeen);
+    };
+}, [user]);
 
   const switchAuthPage = (page: 'login' | 'signup') => {
     setAuthPage(page);

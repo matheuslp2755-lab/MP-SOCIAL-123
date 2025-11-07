@@ -51,6 +51,7 @@ const Feed: React.FC = () => {
   const [isCreatePostModalOpen, setIsCreatePostModalOpen] = useState(false);
   const [isMessagesModalOpen, setIsMessagesModalOpen] = useState(false);
   const [initialMessageTarget, setInitialMessageTarget] = useState<{ id: string, username: string, avatar: string } | null>(null);
+  const [initialConversationId, setInitialConversationId] = useState<string | null>(null);
 
   useEffect(() => {
     if (viewingProfileId || !auth.currentUser) return;
@@ -100,10 +101,15 @@ const Feed: React.FC = () => {
     setIsMessagesModalOpen(true);
   };
 
-  const handleOpenMessages = () => {
-    setInitialMessageTarget(null); // Ensure no specific user is targeted when opening from header
+  const handleOpenMessages = (conversationId?: string) => {
+    setInitialMessageTarget(null);
+    setInitialConversationId(conversationId || null);
     setIsMessagesModalOpen(true);
   }
+
+  const handlePostDeleted = (postId: string) => {
+    setFeedPosts(currentPosts => currentPosts.filter(p => p.id !== postId));
+  };
 
 
   return (
@@ -123,7 +129,7 @@ const Feed: React.FC = () => {
               <div className="flex justify-center"><Spinner/></div>
             ) : feedPosts.length > 0 ? (
               <div className="flex flex-col gap-8">
-                {feedPosts.map(post => <Post key={post.id} post={post} />)}
+                {feedPosts.map(post => <Post key={post.id} post={post} onPostDeleted={handlePostDeleted} />)}
               </div>
             ) : (
               <EmptyFeed />
@@ -144,8 +150,10 @@ const Feed: React.FC = () => {
         onClose={() => {
             setIsMessagesModalOpen(false);
             setInitialMessageTarget(null);
+            setInitialConversationId(null);
         }}
         initialTargetUser={initialMessageTarget}
+        initialConversationId={initialConversationId}
       />
     </>
   );
