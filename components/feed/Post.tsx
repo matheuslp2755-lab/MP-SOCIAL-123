@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { auth, db, doc, updateDoc, arrayUnion, arrayRemove, deleteDoc, storage, ref as storageRef, deleteObject, collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, formatTimestamp, where, getDocs, limit, writeBatch } from '../../firebase';
+import { auth, db, doc, updateDoc, arrayUnion, arrayRemove, deleteDoc, storage, ref as storageRef, deleteObject, collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, formatTimestamp, where, getDocs, limit, writeBatch, getDoc } from '../../firebase';
 
 type PostType = {
     id: string;
@@ -145,6 +145,13 @@ const Post: React.FC<PostProps> = ({ post, onPostDeleted }) => {
     const uniqueMentions = [...new Set(mentions)];
 
     try {
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        const userDoc = await getDoc(userDocRef);
+        if (!userDoc.exists()) {
+            throw new Error("Current user not found in database.");
+        }
+        const currentUsername = userDoc.data().username;
+
         const batch = writeBatch(db);
         const commentsRef = collection(db, 'posts', post.id, 'comments');
         const newCommentRef = doc(commentsRef);
@@ -152,7 +159,7 @@ const Post: React.FC<PostProps> = ({ post, onPostDeleted }) => {
         batch.set(newCommentRef, {
             text: commentText,
             userId: currentUser.uid,
-            username: currentUser.displayName,
+            username: currentUsername,
             timestamp: serverTimestamp()
         });
 
@@ -171,7 +178,7 @@ const Post: React.FC<PostProps> = ({ post, onPostDeleted }) => {
                         batch.set(notificationRef, {
                             type: 'mention_comment',
                             fromUserId: currentUser.uid,
-                            fromUsername: currentUser.displayName,
+                            fromUsername: currentUsername,
                             fromUserAvatar: currentUser.photoURL,
                             postId: post.id,
                             commentText: commentText.length > 100 ? `${commentText.substring(0, 97)}...` : commentText,

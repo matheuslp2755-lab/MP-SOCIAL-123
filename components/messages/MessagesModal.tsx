@@ -41,7 +41,7 @@ const MessagesModal: React.FC<MessagesModalProps> = ({ isOpen, onClose, initialT
                             lastSeenMessageTimestamp: null,
                         }
                     },
-                    updatedAt: serverTimestamp(),
+                    timestamp: serverTimestamp(),
                     crystal: {
                         createdAt: serverTimestamp(),
                         lastInteractionAt: serverTimestamp(),
@@ -50,7 +50,7 @@ const MessagesModal: React.FC<MessagesModalProps> = ({ isOpen, onClose, initialT
                     }
                 });
             } else {
-                await updateDoc(conversationRef, { updatedAt: serverTimestamp() });
+                await updateDoc(conversationRef, { timestamp: serverTimestamp() });
             }
             setActiveConversationId(conversationId);
             setView('list');

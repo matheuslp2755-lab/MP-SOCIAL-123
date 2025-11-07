@@ -40,7 +40,7 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 // Explicitly initialize Storage with the bucket URL provided by the user.
 // This is a direct fix for the upload issue, ensuring we target the correct bucket.
-const storage = getStorage(app, 'gs://teste-rede-fcb99.firebasestorage.app');
+const storage = getStorage(app, 'gs://teste-rede-fcb99.appspot.com');
 
 const formatTimestamp = (timestamp: { seconds: number; nanoseconds: number } | null | undefined): string => {
     if (!timestamp) return '';

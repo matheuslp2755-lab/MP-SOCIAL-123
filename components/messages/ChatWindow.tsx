@@ -28,6 +28,12 @@ interface Message {
     senderId: string;
     text: string;
     timestamp: any;
+    replyTo?: {
+        messageId: string;
+        senderId: string;
+        senderUsername: string;
+        text: string;
+    };
 }
 
 interface OtherUser {
@@ -59,9 +65,7 @@ interface ConversationData {
 
 
 function usePrevious<T>(value: T): T | undefined {
-    // FIX: Changed useRef<T> to useRef<T | undefined> to allow initialization without an argument,
-    // which resolves the "Expected 1 arguments, but got 0" error.
-    const ref = useRef<T | undefined>();
+    const ref = useRef<T | undefined>(undefined);
     useEffect(() => {
         ref.current = value;
     });
@@ -72,6 +76,12 @@ function usePrevious<T>(value: T): T | undefined {
 const TrashIcon: React.FC<{className?: string}> = ({ className }) => (
     <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+    </svg>
+);
+
+const ReplyIcon: React.FC<{className?: string}> = ({ className }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 15l-6-6m0 0l6-6M3 9h12a6 6 0 016 6v3" />
     </svg>
 );
 
@@ -88,6 +98,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
     const [crystalData, setCrystalData] = useState<CrystalData | null>(null);
     const [loading, setLoading] = useState(false);
     const [showDeleteConfirm, setShowDeleteConfirm] = useState<{ open: boolean, messageId: string | null }>({ open: false, messageId: null });
+    const [replyingTo, setReplyingTo] = useState<Message | null>(null);
     
     type AnimationState = 'idle' | 'forming' | 'settling';
     const [animationState, setAnimationState] = useState<AnimationState>('idle');
@@ -100,10 +111,18 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
     const dialogRef = useRef<HTMLDivElement>(null);
     const prevCrystalData = usePrevious(crystalData);
     const unsubUserStatusRef = useRef<(() => void) | null>(null);
+    const inputRef = useRef<HTMLInputElement>(null);
+
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
     }, [messages]);
+
+    useEffect(() => {
+        if (replyingTo) {
+            inputRef.current?.focus();
+        }
+    }, [replyingTo]);
     
     useEffect(() => {
         if (!crystalData || !crystalHeaderRef.current || !dialogRef.current) return;
@@ -241,7 +260,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
         if (newMessage.trim() === '' || !currentUser || !conversationId || !otherUser) return;
 
         const tempMessage = newMessage;
+        const tempReplyingTo = replyingTo;
         setNewMessage('');
+        setReplyingTo(null);
 
         const conversationRef = doc(db, 'conversations', conversationId);
         const messagesRef = collection(conversationRef, 'messages');
@@ -286,11 +307,25 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
             const batch = writeBatch(db);
             
             const newMessageRef = doc(messagesRef);
-            batch.set(newMessageRef, {
+            
+            const newMessageData: any = {
                 senderId: currentUser.uid,
                 text: tempMessage,
                 timestamp: serverTimestamp(),
-            });
+            };
+
+            if (tempReplyingTo) {
+                newMessageData.replyTo = {
+                    messageId: tempReplyingTo.id,
+                    senderId: tempReplyingTo.senderId,
+                    senderUsername: tempReplyingTo.senderId === currentUser.uid 
+                        ? (currentUser.displayName || 'You')
+                        : (otherUser.username || 'User'),
+                    text: tempReplyingTo.text,
+                };
+            }
+
+            batch.set(newMessageRef, newMessageData);
 
             batch.update(conversationRef, {
                 lastMessage: {
@@ -298,7 +333,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
                     senderId: currentUser.uid,
                     timestamp: serverTimestamp(),
                 },
-                updatedAt: serverTimestamp(),
+                timestamp: serverTimestamp(),
                 ...crystalUpdate,
             });
 
@@ -316,6 +351,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
 
         } catch (error) {
             console.error("Error sending message:", error);
+            setNewMessage(tempMessage);
+            setReplyingTo(tempReplyingTo);
         }
     };
     
@@ -419,46 +456,80 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ conversationId, onBack }) => {
                     </div>
                 </header>
             )}
-            <div className="flex-grow p-4 overflow-y-auto">
+            <div className="flex-grow py-4 px-2 overflow-y-auto">
                 <div className="flex flex-col gap-1">
                     {messages.map(msg => (
-                         <div key={msg.id} className={`flex group ${msg.senderId === currentUser?.uid ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`flex items-center gap-2 ${msg.senderId === currentUser?.uid ? 'flex-row-reverse' : ''}`}>
-                                <div className={`max-w-xs md:max-w-md lg:max-w-lg px-4 py-2 rounded-2xl ${
-                                    msg.senderId === currentUser?.uid 
-                                    ? 'bg-sky-500 text-white rounded-br-none' 
-                                    : 'bg-zinc-200 dark:bg-zinc-800 rounded-bl-none'
-                                }`}>
-                                    <p className="text-sm">{msg.text}</p>
-                                </div>
+                        <div key={msg.id} className={`flex items-end group gap-2 ${msg.senderId === currentUser?.uid ? 'self-end flex-row-reverse' : 'self-start'}`}>
+                            <div className={`max-w-xs md:max-w-md lg:max-w-lg rounded-2xl ${
+                                msg.senderId === currentUser?.uid 
+                                ? 'bg-sky-500 text-white rounded-br-none' 
+                                : 'bg-zinc-200 dark:bg-zinc-800 rounded-bl-none'
+                            }`}>
+                                {msg.replyTo && (
+                                    <div className={`p-2 mx-2 mt-2 rounded-lg truncate ${
+                                        msg.senderId === currentUser?.uid
+                                        ? 'bg-sky-400 border-l-2 border-sky-200'
+                                        : 'bg-zinc-300 dark:bg-zinc-700 border-l-2 border-zinc-400 dark:border-zinc-500'
+                                    }`}>
+                                        <p className="font-semibold text-xs">{msg.replyTo.senderUsername}</p>
+                                        <p className="text-sm opacity-90">{msg.replyTo.text}</p>
+                                    </div>
+                                )}
+                                <p className="text-sm break-words px-4 py-2">{msg.text}</p>
+                            </div>
+                    
+                            <div className="flex-shrink-0 flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button 
+                                    onClick={() => setReplyingTo(msg)}
+                                    className="p-1 rounded-full hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                                    aria-label="Reply to message"
+                                >
+                                    <ReplyIcon className="w-5 h-5 text-zinc-500 dark:text-zinc-400" />
+                                </button>
                                 {msg.senderId === currentUser?.uid && (
                                     <button 
                                         onClick={() => setShowDeleteConfirm({ open: true, messageId: msg.id })}
-                                        className="p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                                        className="p-1 rounded-full hover:bg-zinc-200 dark:hover:bg-zinc-700"
                                         aria-label="Delete message"
                                     >
-                                        <TrashIcon className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />
+                                        <TrashIcon className="w-5 h-5 text-zinc-500 dark:text-zinc-400" />
                                     </button>
                                 )}
                             </div>
                         </div>
                     ))}
                     {shouldShowSeen && (
-                         <div className="flex justify-end pr-2">
-                             <p className="text-xs text-zinc-500 dark:text-zinc-400">Visto</p>
+                         <div className="flex justify-end pr-12">
+                             <p className="text-xs text-zinc-500 dark:text-zinc-400">Seen</p>
                          </div>
                     )}
                     <div ref={messagesEndRef} />
                 </div>
             </div>
             <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 flex-shrink-0">
+                {replyingTo && currentUser && (
+                    <div className="bg-zinc-100 dark:bg-zinc-900 p-2 rounded-t-lg mb-[-8px] border-l-4 border-sky-500 relative mx-1">
+                        <div className="flex justify-between items-center">
+                            <p className="text-xs font-semibold text-sky-500">
+                                Replying to {replyingTo.senderId === currentUser.uid ? 'yourself' : otherUser?.username}
+                            </p>
+                             <button onClick={() => setReplyingTo(null)} className="p-1 rounded-full hover:bg-zinc-200 dark:hover:bg-zinc-700">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            </button>
+                        </div>
+                        <p className="text-sm text-zinc-600 dark:text-zinc-400 truncate">
+                            {replyingTo.text}
+                        </p>
+                    </div>
+                )}
                 <form onSubmit={handleSendMessage} className="flex items-center gap-2">
                      <input 
+                        ref={inputRef}
                         type="text"
                         value={newMessage}
                         onChange={(e) => setNewMessage(e.target.value)}
                         placeholder="Message..."
-                        className="w-full bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-full py-2 pl-4 pr-4 text-sm focus:outline-none focus:border-sky-500"
+                        className={`w-full bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 py-2 pl-4 pr-4 text-sm focus:outline-none focus:border-sky-500 ${replyingTo ? 'rounded-b-full rounded-t-none' : 'rounded-full'}`}
                     />
                     <button type="submit" disabled={!newMessage.trim()} className="text-sky-500 font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed px-2">
                         Send

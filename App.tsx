@@ -4,7 +4,6 @@ import { auth, db, doc, updateDoc, serverTimestamp } from './firebase';
 import Login from './components/Login';
 import SignUp from './context/SignUp';
 import Feed from './components/Feed';
-import Footer from './components/common/Footer';
 import { LanguageProvider } from './context/LanguageContext';
 
 const AppContent: React.FC = () => {
@@ -73,7 +72,6 @@ const AppContent: React.FC = () => {
             <SignUp onSwitchMode={() => switchAuthPage('login')} />
           )}
         </main>
-        <Footer />
       </div>
     );
   }

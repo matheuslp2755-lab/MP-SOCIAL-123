@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { auth, db, collection, query, where, onSnapshot, orderBy, doc, formatTimestamp } from '../../firebase';
+import React, { useState, useEffect, useRef } from 'react';
+import { auth, db, collection, query, where, onSnapshot, orderBy, doc, formatTimestamp, getDoc } from '../../firebase';
 import OnlineIndicator from '../common/OnlineIndicator';
 
 interface Conversation {
@@ -14,6 +14,7 @@ interface Conversation {
         timestamp: any;
     };
     isOnline?: boolean;
+    timestamp: any;
 }
 
 interface ConversationListProps {
@@ -21,10 +22,11 @@ interface ConversationListProps {
 }
 
 const ConversationList: React.FC<ConversationListProps> = ({ onSelectConversation }) => {
-    const [conversations, setConversations] = useState<Conversation[]>([]);
+    const [conversations, setConversations] = useState<Omit<Conversation, 'isOnline'>[]>([]);
     const [userStatuses, setUserStatuses] = useState<Record<string, boolean>>({});
     const [loading, setLoading] = useState(true);
     const currentUser = auth.currentUser;
+    const userUnsubs = useRef<(() => void)[]>([]);
 
     useEffect(() => {
         if (!currentUser) return;
@@ -32,64 +34,83 @@ const ConversationList: React.FC<ConversationListProps> = ({ onSelectConversatio
 
         const q = query(
             collection(db, 'conversations'), 
-            where('participants', 'array-contains', currentUser.uid),
-            orderBy('updatedAt', 'desc')
+            where('participants', 'array-contains', currentUser.uid)
+            // Removed orderBy('timestamp', 'desc') to avoid needing a composite index.
+            // Sorting will be handled on the client.
         );
 
-        let userUnsubs: (() => void)[] = [];
-
         const unsubConvos = onSnapshot(q, (snapshot) => {
-            userUnsubs.forEach(unsub => unsub());
-            userUnsubs = [];
+            userUnsubs.current.forEach(unsub => unsub());
+            userUnsubs.current = [];
 
-            const convos = snapshot.docs.map(doc => {
-                const data = doc.data();
+            const conversationsPromises = snapshot.docs.map(async (convDoc) => {
+                const data = convDoc.data();
                 const participants = data.participants;
-                if (!Array.isArray(participants)) {
-                    return null;
-                }
-                // FIX: Cast participants to string[] to ensure `otherUserId` is inferred as `string | undefined`.
-                // This resolves the type error when using it as a computed property name downstream.
+                if (!Array.isArray(participants)) return null;
+                
                 const otherUserId = (participants as string[]).find(p => p !== currentUser.uid);
+                if (!otherUserId) return null;
 
-                if (!otherUserId) {
-                    return null;
+                let otherUserInfo = data.participantInfo?.[otherUserId];
+
+                if (!otherUserInfo?.username || !otherUserInfo?.avatar) {
+                    const userDoc = await getDoc(doc(db, 'users', otherUserId));
+                    if (userDoc.exists()) {
+                        const userData = userDoc.data();
+                        otherUserInfo = { username: userData.username, avatar: userData.avatar };
+                    } else {
+                        // Don't show conversations with deleted users
+                        return null; 
+                    }
                 }
-
-                const otherUserInfo = data.participantInfo[otherUserId];
 
                 return {
-                    id: doc.id,
+                    id: convDoc.id,
                     otherUser: {
                         id: otherUserId,
-                        username: otherUserInfo?.username || 'User',
-                        avatar: otherUserInfo?.avatar || `https://i.pravatar.cc/150?u=${otherUserId}`,
+                        username: String(otherUserInfo.username),
+                        avatar: String(otherUserInfo.avatar),
                     },
                     lastMessage: data.lastMessage,
+                    timestamp: data.timestamp,
                 };
-            }).filter((c): c is Exclude<typeof c, null> => c !== null);
-
-            const uniqueUserIds = [...new Set(convos.map(c => c.otherUser.id))];
-            
-            uniqueUserIds.forEach(userId => {
-                const userDocRef = doc(db, 'users', userId);
-                const unsub = onSnapshot(userDocRef, (userSnap) => {
-                    if (userSnap.exists()) {
-                        const lastSeen = userSnap.data().lastSeen;
-                        const isOnline = lastSeen && (new Date().getTime() / 1000 - lastSeen.seconds) < 600;
-                        setUserStatuses(prev => ({ ...prev, [userId]: isOnline }));
-                    }
-                });
-                userUnsubs.push(unsub);
             });
 
-            setConversations(convos);
+            Promise.all(conversationsPromises).then(resolvedConversations => {
+                const validConvos = resolvedConversations.filter(Boolean) as Omit<Conversation, 'isOnline'>[];
+                
+                // Sort conversations by timestamp client-side
+                validConvos.sort((a, b) => {
+                    const tsA = a.timestamp?.seconds || 0;
+                    const tsB = b.timestamp?.seconds || 0;
+                    return tsB - tsA; // Descending order
+                });
+
+                const uniqueUserIds = [...new Set(validConvos.map(c => c.otherUser.id))];
+                
+                uniqueUserIds.forEach(userId => {
+                    const userDocRef = doc(db, 'users', userId);
+                    const unsub = onSnapshot(userDocRef, (userSnap) => {
+                        if (userSnap.exists()) {
+                            const lastSeen = userSnap.data().lastSeen;
+                            const isOnline = lastSeen && (new Date().getTime() / 1000 - lastSeen.seconds) < 600;
+                            setUserStatuses(prev => ({...prev, [userId]: isOnline }));
+                        }
+                    });
+                    userUnsubs.current.push(unsub);
+                });
+
+                setConversations(validConvos);
+                setLoading(false);
+            });
+        }, (error) => {
+            console.error("Error fetching conversations:", error);
             setLoading(false);
         });
 
         return () => {
             unsubConvos();
-            userUnsubs.forEach(unsub => unsub());
+            userUnsubs.current.forEach(unsub => unsub());
         };
     }, [currentUser]);
 

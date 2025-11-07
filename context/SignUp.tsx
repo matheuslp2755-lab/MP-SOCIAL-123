@@ -53,29 +53,35 @@ const SignUp: React.FC<SignUpProps> = ({ onSwitchMode }) => {
       const svgString = `<svg xmlns="http://www.w3.org/2000/svg" width="150" height="150" viewBox="0 0 150 150"><rect width="100%" height="100%" fill="${color}" /><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="75" fill="#ffffff">${initial}</text></svg>`;
       const svgBlob = new Blob([svgString], { type: 'image/svg+xml' });
       
-      const avatarRef = ref(storage, `avatars/${userCredential.user.uid}/default.svg`);
+      const avatarRef = ref(storage, `avatars/${userCredential.user.uid}/avatar.svg`);
       await uploadBytes(avatarRef, svgBlob);
       const avatarUrl = await getDownloadURL(avatarRef);
 
+      // Update user profile in auth
       await updateProfile(userCredential.user, {
         displayName: username,
         photoURL: avatarUrl,
       });
-      
+
+      // Create user document in Firestore
       await setDoc(doc(db, 'users', userCredential.user.uid), {
-        uid: userCredential.user.uid,
-        username,
+        username: username,
         username_lowercase: username.toLowerCase(),
-        email,
+        email: email,
         avatar: avatarUrl,
         bio: '',
-        language: 'en',
         isPrivate: false,
-        lastSeen: serverTimestamp(),
+        createdAt: serverTimestamp(),
+        lastSeen: serverTimestamp()
       });
+
       // Auth state change will be handled by App.tsx
     } catch (err: any) {
-      setError("Failed to create an account. The email may already be in use.");
+      if (err.code === 'auth/email-already-in-use') {
+        setError("This email is already in use.");
+      } else {
+        setError("Failed to create an account. Please try again.");
+      }
       console.error(err);
     } finally {
       setLoading(false);
@@ -84,51 +90,59 @@ const SignUp: React.FC<SignUpProps> = ({ onSwitchMode }) => {
 
   return (
     <div className="w-full max-w-sm">
-      <div className="bg-white dark:bg-black border border-zinc-300 dark:border-zinc-800 rounded-lg p-10 mb-2.5">
-        <AppLogo />
-        <h2 className="font-semibold text-zinc-500 dark:text-zinc-400 text-center text-base mb-4">
-          Sign up to see photos and videos from your friends.
-        </h2>
-
-        <form onSubmit={handleSubmit} className="flex flex-col gap-2 mt-4">
-          <TextInput id="email" type="email" label="Mobile Number or Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <TextInput id="username" type="text" label="Username" value={username} onChange={(e) => setUsername(e.target.value)} />
-          <TextInput id="password" type="password" label="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
-          
-          <p className="text-xs text-zinc-500 dark:text-zinc-400 text-center my-4">
-            People who use our service may have uploaded your contact information to Instagram.{' '}
-            <a href="#" className="text-blue-900 dark:text-blue-400 font-semibold">Learn More</a>
-          </p>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400 text-center mb-4">
-            By signing up, you agree to our{' '}
-            <a href="#" className="text-blue-900 dark:text-blue-400 font-semibold">Terms</a>,{' '}
-            <a href="#" className="text-blue-900 dark:text-blue-400 font-semibold">Privacy Policy</a> and{' '}
-            <a href="#" className="text-blue-900 dark:text-blue-400 font-semibold">Cookies Policy</a>.
-          </p>
-          
-          {error && <p className="text-red-500 text-xs text-center mb-2">{error}</p>}
-          <Button type="submit" disabled={!isFormValid || loading}>
-            {loading ? "Signing Up..." : "Sign up"}
-          </Button>
-        </form>
-      </div>
-
-      <div className="bg-white dark:bg-black border border-zinc-300 dark:border-zinc-800 rounded-lg p-6 text-center text-sm">
-        <p>
-          Have an account?{' '}
-          <button onClick={onSwitchMode} className="font-semibold text-sky-500 hover:text-sky-600 bg-transparent border-none p-0 cursor-pointer">
-            Log in
-          </button>
-        </p>
-      </div>
-
-      <div className="text-center mt-4 text-sm">
-        <p className="mb-4">Get the app.</p>
-        <div className="flex justify-center gap-4">
-          <AppStoreButton />
-          <GooglePlayButton />
+        <div className="bg-white dark:bg-black border border-zinc-300 dark:border-zinc-800 rounded-lg p-10 mb-2.5">
+            <AppLogo />
+            <h2 className="text-zinc-500 dark:text-zinc-400 font-semibold text-center mb-6">
+                Sign up to see photos and videos from your friends.
+            </h2>
+            <form onSubmit={handleSubmit} className="flex flex-col gap-2">
+                <TextInput
+                    id="email"
+                    type="email"
+                    label="Email address"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                />
+                <TextInput
+                    id="username"
+                    type="text"
+                    label="Username"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                />
+                <TextInput
+                    id="password"
+                    type="password"
+                    label="Password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                />
+                {error && <p className="text-red-500 text-xs text-center mt-2">{error}</p>}
+                <Button type="submit" disabled={!isFormValid || loading} className="mt-4">
+                    {loading ? "Signing Up..." : "Sign Up"}
+                </Button>
+            </form>
         </div>
-      </div>
+        
+        <div className="bg-white dark:bg-black border border-zinc-300 dark:border-zinc-800 rounded-lg p-6 text-center text-sm">
+            <p>
+                Have an account?{' '}
+                <button
+                    onClick={onSwitchMode}
+                    className="font-semibold text-sky-500 hover:text-sky-600 bg-transparent border-none p-0 cursor-pointer"
+                >
+                    Log in
+                </button>
+            </p>
+        </div>
+
+        <div className="text-center mt-4 text-sm">
+            <p className="mb-4">Get the app.</p>
+            <div className="flex justify-center gap-4">
+                <AppStoreButton />
+                <GooglePlayButton />
+            </div>
+        </div>
     </div>
   );
 };

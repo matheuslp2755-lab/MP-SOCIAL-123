@@ -273,6 +273,48 @@ const UserProfile: React.FC<UserProfileProps> = ({ userId, onStartMessage }) => 
                 await updateProfile(currentUser, authUpdates);
             }
 
+            // Batch update denormalized avatar URLs in other documents
+            if (newAvatarUrl) {
+                try {
+                    const currentUserUid = currentUser.uid;
+            
+                    // Update posts in batches
+                    const postsQuery = query(collection(db, 'posts'), where('userId', '==', currentUserUid));
+                    const postsSnapshot = await getDocs(postsQuery);
+                    if (!postsSnapshot.empty) {
+                        // Firestore batches are limited to 500 operations.
+                        for (let i = 0; i < postsSnapshot.docs.length; i += 500) {
+                            const batch = writeBatch(db);
+                            const chunk = postsSnapshot.docs.slice(i, i + 500);
+                            chunk.forEach(postDoc => {
+                                batch.update(postDoc.ref, { userAvatar: newAvatarUrl });
+                            });
+                            await batch.commit();
+                        }
+                    }
+            
+                    // Update conversations in batches
+                    const convosQuery = query(collection(db, 'conversations'), where('participants', 'array-contains', currentUserUid));
+                    const convosSnapshot = await getDocs(convosQuery);
+                    if (!convosSnapshot.empty) {
+                        for (let i = 0; i < convosSnapshot.docs.length; i += 500) {
+                            const batch = writeBatch(db);
+                            const chunk = convosSnapshot.docs.slice(i, i + 500);
+                            chunk.forEach(convoDoc => {
+                                batch.update(convoDoc.ref, { [`participantInfo.${currentUserUid}.avatar`]: newAvatarUrl });
+                            });
+                            await batch.commit();
+                        }
+                    }
+                    
+                } catch (batchError) {
+                    console.error("Failed to batch update avatars in posts and conversations:", batchError);
+                    // This is a background task, so we don't show an error to the user.
+                    // The main profile update has already succeeded.
+                }
+            }
+
+
             setUser(prev => {
                 if (!prev) return null;
                 return { ...prev, username, bio, isPrivate, avatar: newAvatarUrl || prev.avatar };
