@@ -4,7 +4,7 @@ import {
     auth,
     db,
     storage,
-    ref,
+    storageRef,
     uploadBytes,
     getDownloadURL,
     doc,
@@ -235,6 +235,58 @@ const UserProfile: React.FC<UserProfileProps> = ({ userId, onStartMessage }) => 
         }
     };
     
+    const updateDenormalizedAvatar = async (userId: string, newAvatarUrl: string) => {
+        console.log(`Starting background avatar update for user ${userId}.`);
+        const updates: { ref: any; data: any }[] = [];
+        const MAX_BATCH_WRITES = 500;
+    
+        // 1. Find all posts by the user
+        try {
+            const postsQuery = query(collection(db, 'posts'), where('userId', '==', userId));
+            const postsSnapshot = await getDocs(postsQuery);
+            postsSnapshot.forEach(doc => {
+                updates.push({ ref: doc.ref, data: { userAvatar: newAvatarUrl } });
+            });
+            console.log(`Found ${postsSnapshot.size} posts to update.`);
+        } catch (error) {
+            console.error("Failed to query posts for avatar update:", error);
+        }
+    
+        // 2. Find all conversations the user is part of
+        try {
+            const convosQuery = query(collection(db, 'conversations'), where('participants', 'array-contains', userId));
+            const convosSnapshot = await getDocs(convosQuery);
+            convosSnapshot.forEach(doc => {
+                updates.push({ ref: doc.ref, data: { [`participantInfo.${userId}.avatar`]: newAvatarUrl } });
+            });
+            console.log(`Found ${convosSnapshot.size} conversations to update.`);
+        } catch (error) {
+            console.error("Failed to query conversations for avatar update:", error);
+        }
+    
+        // 3. Commit all updates in batches
+        if (updates.length === 0) {
+            console.log("No denormalized documents needed an update.");
+            return;
+        }
+    
+        console.log(`Committing ${updates.length} total updates in batches...`);
+        for (let i = 0; i < updates.length; i += MAX_BATCH_WRITES) {
+            const batch = writeBatch(db);
+            const chunk = updates.slice(i, i + MAX_BATCH_WRITES);
+            chunk.forEach(update => {
+                batch.update(update.ref, update.data);
+            });
+            try {
+                await batch.commit();
+                console.log(`Batch ${i / MAX_BATCH_WRITES + 1} committed successfully.`);
+            } catch (error) {
+                console.error(`Failed to commit update batch ${i / MAX_BATCH_WRITES + 1}:`, error);
+            }
+        }
+        console.log("Background avatar update finished.");
+    };
+
     const handleProfileUpdate = async ({ username, bio, avatarFile, isPrivate }: { username: string; bio: string; avatarFile: File | null; isPrivate: boolean }) => {
         if (!currentUser) return;
         setIsUpdating(true);
@@ -246,9 +298,9 @@ const UserProfile: React.FC<UserProfileProps> = ({ userId, onStartMessage }) => 
             let newAvatarUrl: string | undefined = undefined;
 
             if (avatarFile) {
-                const storageRef = ref(storage, `avatars/${currentUser.uid}/${Date.now()}-${avatarFile.name}`);
-                await uploadBytes(storageRef, avatarFile);
-                newAvatarUrl = await getDownloadURL(storageRef);
+                const avatarStorageRef = storageRef(storage, `avatars/${currentUser.uid}/${Date.now()}-${avatarFile.name}`);
+                await uploadBytes(avatarStorageRef, avatarFile);
+                newAvatarUrl = await getDownloadURL(avatarStorageRef);
                 firestoreUpdates.avatar = newAvatarUrl;
                 authUpdates.photoURL = newAvatarUrl;
             }
@@ -273,47 +325,13 @@ const UserProfile: React.FC<UserProfileProps> = ({ userId, onStartMessage }) => 
                 await updateProfile(currentUser, authUpdates);
             }
 
-            // Batch update denormalized avatar URLs in other documents
             if (newAvatarUrl) {
-                try {
-                    const currentUserUid = currentUser.uid;
-            
-                    // Update posts in batches
-                    const postsQuery = query(collection(db, 'posts'), where('userId', '==', currentUserUid));
-                    const postsSnapshot = await getDocs(postsQuery);
-                    if (!postsSnapshot.empty) {
-                        // Firestore batches are limited to 500 operations.
-                        for (let i = 0; i < postsSnapshot.docs.length; i += 500) {
-                            const batch = writeBatch(db);
-                            const chunk = postsSnapshot.docs.slice(i, i + 500);
-                            chunk.forEach(postDoc => {
-                                batch.update(postDoc.ref, { userAvatar: newAvatarUrl });
-                            });
-                            await batch.commit();
-                        }
-                    }
-            
-                    // Update conversations in batches
-                    const convosQuery = query(collection(db, 'conversations'), where('participants', 'array-contains', currentUserUid));
-                    const convosSnapshot = await getDocs(convosQuery);
-                    if (!convosSnapshot.empty) {
-                        for (let i = 0; i < convosSnapshot.docs.length; i += 500) {
-                            const batch = writeBatch(db);
-                            const chunk = convosSnapshot.docs.slice(i, i + 500);
-                            chunk.forEach(convoDoc => {
-                                batch.update(convoDoc.ref, { [`participantInfo.${currentUserUid}.avatar`]: newAvatarUrl });
-                            });
-                            await batch.commit();
-                        }
-                    }
-                    
-                } catch (batchError) {
-                    console.error("Failed to batch update avatars in posts and conversations:", batchError);
-                    // This is a background task, so we don't show an error to the user.
-                    // The main profile update has already succeeded.
-                }
+                // Fire and forget the background update.
+                // This makes the UI feel instant and lets the updates happen reliably.
+                updateDenormalizedAvatar(currentUser.uid, newAvatarUrl).catch(e => {
+                    console.error("A failure occurred during the background avatar update process:", e);
+                });
             }
-
 
             setUser(prev => {
                 if (!prev) return null;

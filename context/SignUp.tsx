@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
-import { auth, db, setDoc, doc, storage, ref, uploadBytes, getDownloadURL, serverTimestamp } from '../firebase';
+import { auth, db, setDoc, doc, storage, storageRef, uploadBytes, getDownloadURL, serverTimestamp } from '../firebase';
 import TextInput from '../components/common/TextInput';
 import Button from '../components/common/Button';
 
@@ -53,7 +53,7 @@ const SignUp: React.FC<SignUpProps> = ({ onSwitchMode }) => {
       const svgString = `<svg xmlns="http://www.w3.org/2000/svg" width="150" height="150" viewBox="0 0 150 150"><rect width="100%" height="100%" fill="${color}" /><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="75" fill="#ffffff">${initial}</text></svg>`;
       const svgBlob = new Blob([svgString], { type: 'image/svg+xml' });
       
-      const avatarRef = ref(storage, `avatars/${userCredential.user.uid}/avatar.svg`);
+      const avatarRef = storageRef(storage, `avatars/${userCredential.user.uid}/avatar.svg`);
       await uploadBytes(avatarRef, svgBlob);
       const avatarUrl = await getDownloadURL(avatarRef);
 

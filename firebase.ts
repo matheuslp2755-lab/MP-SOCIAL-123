@@ -21,13 +21,13 @@ import {
   onSnapshot,
   writeBatch
 } from 'firebase/firestore';
-import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 
 const firebaseConfig = {
     apiKey: "AIzaSyBscsAkO_yJYfVVtCBh3rNF8Cm51_HLW54",
     authDomain: "teste-rede-fcb99.firebaseapp.com",
     projectId: "teste-rede-fcb99",
-    storageBucket: "teste-rede-fcb99.appspot.com",
+    storageBucket: "teste-rede-fcb99.firebasestorage.app",
     messagingSenderId: "1006477304115",
     appId: "1:1006477304115:web:e88d8e5f2e75d1b4df5e46"
 };
@@ -38,9 +38,9 @@ const app = firebaseApp.initializeApp(firebaseConfig);
 // Get services for the initialized app
 const auth = getAuth(app);
 const db = getFirestore(app);
-// Explicitly initialize Storage with the bucket URL provided by the user.
-// This is a direct fix for the upload issue, ensuring we target the correct bucket.
-const storage = getStorage(app, 'gs://teste-rede-fcb99.appspot.com');
+// Explicitly initialize Storage with the bucket URL.
+// This can resolve issues where the default bucket from the config is not being picked up correctly.
+const storage = getStorage(app, `gs://${firebaseConfig.storageBucket}`);
 
 const formatTimestamp = (timestamp: { seconds: number; nanoseconds: number } | null | undefined): string => {
     if (!timestamp) return '';
@@ -72,7 +72,7 @@ export {
   setDoc,
   deleteDoc,
   serverTimestamp,
-  ref,
+  storageRef,
   uploadBytes,
   getDownloadURL,
   getDoc,

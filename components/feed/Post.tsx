@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { auth, db, doc, updateDoc, arrayUnion, arrayRemove, deleteDoc, storage, ref as storageRef, deleteObject, collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, formatTimestamp, where, getDocs, limit, writeBatch, getDoc } from '../../firebase';
+import { auth, db, doc, updateDoc, arrayUnion, arrayRemove, deleteDoc, storage, storageRef, deleteObject, collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, formatTimestamp, where, getDocs, limit, writeBatch, getDoc } from '../../firebase';
 
 type PostType = {
     id: string;

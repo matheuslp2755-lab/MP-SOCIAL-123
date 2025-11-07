@@ -6,7 +6,7 @@ import {
     addDoc,
     collection,
     serverTimestamp,
-    ref,
+    storageRef,
     uploadBytes,
     getDownloadURL,
     doc,
@@ -75,9 +75,9 @@ const CreatePostModal: React.FC<CreatePostModalProps> = ({ isOpen, onClose, onPo
             }
             const userData = userDocSnap.data();
 
-            const storageRef = ref(storage, `posts/${currentUser.uid}/${Date.now()}-${imageFile.name}`);
-            await uploadBytes(storageRef, imageFile);
-            const downloadURL = await getDownloadURL(storageRef);
+            const imageUploadRef = storageRef(storage, `posts/${currentUser.uid}/${Date.now()}-${imageFile.name}`);
+            await uploadBytes(imageUploadRef, imageFile);
+            const downloadURL = await getDownloadURL(imageUploadRef);
 
             await addDoc(collection(db, 'posts'), {
                 userId: currentUser.uid,
